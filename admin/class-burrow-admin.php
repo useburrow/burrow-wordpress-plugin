@@ -1,140 +1,2332 @@
 <?php
 /**
- * The admin-specific functionality of the plugin.
+ * Admin onboarding + operations UI.
  *
- * Defines the plugin name, version, and hooks for the admin settings page.
- *
- * @package    Burrow
- * @subpackage Burrow/admin
+ * @package Burrow
  */
 class Burrow_Admin {
-
-	/**
-	 * The ID of this plugin.
-	 *
-	 * @var string $plugin_name The ID of this plugin.
-	 */
 	private $plugin_name;
-
-	/**
-	 * The version of this plugin.
-	 *
-	 * @var string $version The current version of this plugin.
-	 */
 	private $version;
+	private $options_repo;
+	private $outbox_repo;
 
-	/**
-	 * Initialize the class and set its properties.
-	 *
-	 * @param string $plugin_name The name of this plugin.
-	 * @param string $version     The version of this plugin.
-	 */
 	public function __construct( $plugin_name, $version ) {
-		$this->plugin_name = $plugin_name;
-		$this->version     = $version;
+		$this->plugin_name  = $plugin_name;
+		$this->version      = $version;
+		$this->options_repo = new BurrowWP\Infrastructure\Persistence\WpOptionsRepository();
+		$this->outbox_repo  = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
 	}
 
-	/**
-	 * Register the stylesheets for the admin area.
-	 */
-	public function enqueue_styles() {
-		// Admin styles can be enqueued here when needed.
-	}
+	public function enqueue_styles() {}
+	public function enqueue_scripts() {}
 
-	/**
-	 * Register the JavaScript for the admin area.
-	 */
-	public function enqueue_scripts() {
-		// Admin scripts can be enqueued here when needed.
-	}
-
-	/**
-	 * Add the plugin settings page to the WordPress admin menu.
-	 */
 	public function add_settings_page() {
-		add_options_page(
-			__( 'Burrow Settings', 'burrow' ),
+		add_menu_page(
+			__( 'Burrow', 'burrow' ),
 			__( 'Burrow', 'burrow' ),
 			'manage_options',
-			'burrow',
-			array( $this, 'render_settings_page' )
+			'burrow-onboarding',
+			array( $this, 'render_onboarding_page' ),
+			$this->get_menu_icon_data_uri(),
+			56
 		);
+		add_submenu_page( 'burrow-onboarding', __( 'Onboarding', 'burrow' ), __( 'Onboarding', 'burrow' ), 'manage_options', 'burrow-onboarding', array( $this, 'render_onboarding_page' ) );
+		add_submenu_page( 'burrow-onboarding', __( 'Operations', 'burrow' ), __( 'Operations', 'burrow' ), 'manage_options', 'burrow-operations', array( $this, 'render_settings_page' ) );
+		add_submenu_page( 'burrow-onboarding', __( 'Outbox', 'burrow' ), __( 'Outbox', 'burrow' ), 'manage_options', 'burrow-outbox', array( $this, 'render_outbox_page' ) );
 	}
 
-	/**
-	 * Register the plugin settings fields.
-	 */
-	public function register_settings() {
-		register_setting(
-			'burrow_settings_group',
-			'burrow_api_key',
-			array(
-				'type'              => 'string',
-				'sanitize_callback' => 'sanitize_text_field',
-				'default'           => '',
-			)
-		);
+	public function register_settings() {}
 
-		add_settings_section(
-			'burrow_general_section',
-			__( 'General Settings', 'burrow' ),
-			null,
-			'burrow'
-		);
-
-		add_settings_field(
-			'burrow_api_key',
-			__( 'API Key', 'burrow' ),
-			array( $this, 'render_api_key_field' ),
-			'burrow',
-			'burrow_general_section'
-		);
+	public function maybe_redirect_after_activation() {
+		if ( wp_doing_ajax() || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( ! get_option( 'burrow_do_activation_redirect', false ) ) {
+			return;
+		}
+		delete_option( 'burrow_do_activation_redirect' );
+		wp_safe_redirect( admin_url( 'admin.php?page=burrow-onboarding&step=connection' ) );
+		exit;
 	}
 
-	/**
-	 * Render the API key settings field.
-	 */
-	public function render_api_key_field() {
-		$api_key = get_option( 'burrow_api_key', '' );
+	public function maybe_handle_admin_actions() {
+		if ( empty( $_POST['burrow_action'] ) || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		check_admin_referer( 'burrow_admin_action', 'burrow_nonce' );
+
+		$action   = sanitize_key( wp_unslash( $_POST['burrow_action'] ) );
+		$settings = $this->options_repo->get_settings();
+		$message  = __( 'Action completed.', 'burrow' );
+		$step     = 'connection';
+
+		if ( 'setup_connection' === $action ) {
+			$settings['base_url'] = esc_url_raw( (string) wp_unslash( $_POST['base_url'] ?? '' ) );
+			$settings['api_key']  = sanitize_text_field( (string) wp_unslash( $_POST['api_key'] ?? '' ) );
+			if ( empty( $settings['base_url'] ) ) {
+				$settings['base_url'] = 'https://api.useburrow.com';
+			}
+
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+			$res    = $client->discover( $this->build_discover_payload() );
+			if ( empty( $res['ok'] ) ) {
+				$message = __( 'Connection failed.', 'burrow' ) . ' ' . ( $res['error'] ?? '' );
+			} else {
+				$body                                   = (array) ( $res['body'] ?? array() );
+				$settings['project_candidates']         = $this->extract_project_candidates( $body );
+				$settings['routing']['organizationId']  = (string) ( $body['organizationId'] ?? $settings['routing']['organizationId'] );
+				$settings['onboarding']                 = $this->reset_onboarding_state( $settings['onboarding'] ?? array() );
+				$message                                = __( 'Connected. Select a project to continue.', 'burrow' );
+				$step                                   = 'project';
+			}
+			$this->options_repo->save_settings( $settings );
+		} elseif ( 'select_project' === $action ) {
+			$index      = (int) ( $_POST['project_index'] ?? -1 );
+			$candidates = isset( $settings['project_candidates'] ) && is_array( $settings['project_candidates'] ) ? $settings['project_candidates'] : array();
+			$step       = 'project';
+			if ( ! isset( $candidates[ $index ] ) ) {
+				$message = __( 'Please select a project.', 'burrow' );
+			} else {
+				$selected = $candidates[ $index ];
+				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+				$res      = $client->link(
+					array(
+						'site'      => array( 'url' => site_url() ),
+						'selection' => array(
+							'organizationId' => (string) $selected['organizationId'],
+							'clientId'       => (string) $selected['clientId'],
+							'projectId'      => (string) $selected['projectId'],
+						),
+					)
+				);
+				$message = $this->persist_link_response( $res );
+				$step    = ! empty( $res['ok'] ) ? 'integrations' : 'project';
+			}
+		} elseif ( 'save_integrations' === $action ) {
+			$selected = isset( $_POST['integrations'] ) && is_array( $_POST['integrations'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['integrations'] ) ) : array();
+			if ( empty( $selected ) ) {
+				$message = __( 'Select at least one integration to continue.', 'burrow' );
+				$step    = 'integrations';
+				$this->redirect_with_notice( $step, $message );
+			}
+			$settings['onboarding']['selected_integrations'] = array_values( array_unique( $selected ) );
+			$settings['onboarding']['gravity_configured']    = false;
+			$settings['onboarding']['woocommerce_confirmed'] = false;
+			$settings['onboarding']['woocommerce_mode']      = in_array( 'woocommerce', $selected, true ) ? 'track' : 'off';
+			$settings['onboarding']['provider_configured']   = array();
+			$this->options_repo->save_settings( $settings );
+			$message = __( 'Integrations selected.', 'burrow' );
+			$step    = $this->next_config_step( $settings, 'integrations' );
+		} elseif ( 'save_gravity_contracts' === $action ) {
+			$gravity                        = isset( $_POST['gravity'] ) ? wp_unslash( $_POST['gravity'] ) : array();
+			$settings['forms_contracts']    = $this->merge_gravity_contracts( $settings, $gravity );
+			$settings['onboarding']['gravity_configured'] = true;
+			$settings['onboarding']['provider_configured']['gravity-forms'] = true;
+			$this->options_repo->save_settings( $settings );
+			$message = __( 'Gravity Forms configuration saved.', 'burrow' );
+			$step    = $this->next_config_step( $settings, 'gravity-forms' );
+		} elseif ( 'save_provider_contracts' === $action ) {
+			$provider = isset( $_POST['provider'] ) ? sanitize_key( wp_unslash( $_POST['provider'] ) ) : '';
+			$allowed  = array( 'contact-form-7', 'ninja-forms', 'fluent-forms' );
+			$step     = $provider;
+			if ( ! in_array( $provider, $allowed, true ) ) {
+				$message = __( 'Invalid provider selected.', 'burrow' );
+			} else {
+				$provider_forms = isset( $_POST['provider_forms'] ) ? wp_unslash( $_POST['provider_forms'] ) : array();
+				$settings['forms_contracts'] = $this->merge_simple_provider_contracts( $settings, $provider, $provider_forms );
+				$settings['onboarding']['provider_configured'][ $provider ] = true;
+				$this->options_repo->save_settings( $settings );
+				$labels  = $this->integration_labels();
+				$message = sprintf( __( '%s configuration saved.', 'burrow' ), (string) ( $labels[ $provider ] ?? $provider ) );
+				$step    = $this->next_config_step( $settings, $provider );
+			}
+		} elseif ( 'confirm_woocommerce' === $action ) {
+			$mode = isset( $_POST['woocommerce_mode'] ) ? sanitize_key( wp_unslash( $_POST['woocommerce_mode'] ) ) : 'track';
+			if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
+				$mode = 'track';
+			}
+			$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+			if ( 'off' === $mode ) {
+				$selected = array_values( array_diff( $selected, array( 'woocommerce' ) ) );
+			} elseif ( ! in_array( 'woocommerce', $selected, true ) ) {
+				$selected[] = 'woocommerce';
+			}
+			$settings['onboarding']['selected_integrations'] = $selected;
+			$settings['onboarding']['woocommerce_mode']      = $mode;
+			$settings['onboarding']['woocommerce_confirmed'] = true;
+			$this->options_repo->save_settings( $settings );
+			$message = 'off' === $mode
+				? __( 'WooCommerce tracking disabled.', 'burrow' )
+				: __( 'WooCommerce tracking enabled.', 'burrow' );
+			$step    = $this->next_config_step( $settings, 'woocommerce' );
+		} elseif ( 'sync_forms_contract' === $action ) {
+			$routing_error = $this->validate_routing_before_contract_sync( $settings );
+			if ( '' !== $routing_error ) {
+				$message = $routing_error;
+				$step    = 'project';
+				$this->redirect_with_notice( $step, $message );
+			}
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
+			$message = $this->persist_contract_response( $res );
+			$step    = 'backfill';
+		} elseif ( 'queue_backfill' === $action ) {
+			if ( empty( $settings['contract_sync']['syncedAt'] ) ) {
+				$step    = 'review';
+				$message = __( 'Sync contracts to Burrow before starting backfill.', 'burrow' );
+				$this->redirect_with_notice( $step, $message );
+			}
+			$preset = isset( $_POST['backfill_window_preset'] ) ? sanitize_key( wp_unslash( $_POST['backfill_window_preset'] ) ) : 'last_30_days';
+			$step       = 'backfill';
+			$queue_error = '';
+			$window = $this->resolve_backfill_window_for_preset( $preset );
+			if ( ! empty( $window['error'] ) ) {
+				$queue_error = (string) $window['error'];
+			}
+			if ( '' === $queue_error ) {
+				$active_contract_keys = $this->build_backfill_active_keys( $settings );
+				if ( empty( $active_contract_keys ) ) {
+					$message = __( 'No configured forms or WooCommerce tracking found for backfill.', 'burrow' );
+				} else {
+					$now_iso = gmdate( 'c' );
+					$window_start = (string) $window['windowStart'];
+					$window_end   = (string) $window['windowEnd'];
+					$settings['backfill'] = array(
+						'status'             => 'queued',
+						'windowPreset'       => (string) $window['preset'],
+						'windowStart'        => $window_start,
+						'windowEnd'          => $window_end,
+						'scope'              => 'all_configured_forms',
+						'cursor'             => array(),
+						'activeContractKeys' => $active_contract_keys,
+						'totalForms'         => count( $active_contract_keys ),
+						'completedForms'     => 0,
+						'processedEvents'    => 0,
+						'lastError'          => '',
+						'queuedAt'           => $now_iso,
+						'startedAt'          => '',
+						'completedAt'        => '',
+						'updatedAt'          => $now_iso,
+						'batchSize'          => 100,
+						'perKeyConcurrency'  => 4,
+					);
+					$this->options_repo->save_settings( $settings );
+					// Kick off worker immediately for local/dev visibility,
+					// while cron remains the durable fallback path.
+					wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
+					do_action( 'burrow_backfill_worker' );
+					$message = __( 'Backfill job queued.', 'burrow' );
+				}
+			} else {
+				$message = $queue_error;
+			}
+		} elseif ( 'resume_backfill' === $action ) {
+			$step = 'backfill';
+			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+			$job['status']    = 'queued';
+			$job['lastError'] = '';
+			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings );
+			$job['totalForms']         = count( (array) $job['activeContractKeys'] );
+			$job['updatedAt'] = gmdate( 'c' );
+			$settings['backfill'] = $job;
+			$this->options_repo->save_settings( $settings );
+			wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
+			do_action( 'burrow_backfill_worker' );
+			$message = __( 'Backfill resumed from current cursor.', 'burrow' );
+		} elseif ( 'retry_backfill' === $action ) {
+			$step = 'backfill';
+			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+			$job['status']          = 'queued';
+			$job['cursor']          = array();
+			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings );
+			$job['totalForms']         = count( (array) $job['activeContractKeys'] );
+			$job['completedForms']  = 0;
+			$job['processedEvents'] = 0;
+			$job['startedAt']       = '';
+			$job['completedAt']     = '';
+			$job['lastError']       = '';
+			$job['updatedAt']       = gmdate( 'c' );
+			$settings['backfill']   = $job;
+			$this->options_repo->save_settings( $settings );
+			wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
+			do_action( 'burrow_backfill_worker' );
+			$message = __( 'Backfill restarted from beginning.', 'burrow' );
+		} elseif ( 'replay_failed' === $action ) {
+			$ok      = $this->outbox_repo->replay_failed( (int) ( $_POST['outbox_id'] ?? 0 ) );
+			$message = $ok ? __( 'Failed event queued for replay.', 'burrow' ) : __( 'Unable to replay event.', 'burrow' );
+			$step    = isset( $_POST['return_step'] ) ? sanitize_key( (string) wp_unslash( $_POST['return_step'] ) ) : 'operations';
+			if ( ! in_array( $step, array( 'operations', 'outbox' ), true ) ) {
+				$step = 'operations';
+			}
+		} elseif ( 'save_operations_settings' === $action ) {
+			$step = 'operations';
+			$retention_days = isset( $_POST['outbox_retention_days'] ) ? (int) $_POST['outbox_retention_days'] : 30;
+			$retention_days = max( 1, min( 365, $retention_days ) );
+			$settings['outbox_retention_days'] = $retention_days;
+			$this->options_repo->save_settings( $settings );
+			$message = sprintf( __( 'Outbox retention updated to %d days.', 'burrow' ), $retention_days );
+		}
+
+		$this->redirect_with_notice( $step, $message );
+	}
+
+	public function render_onboarding_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$settings = $this->options_repo->get_settings();
+		$step     = isset( $_GET['step'] ) ? sanitize_key( wp_unslash( $_GET['step'] ) ) : $this->default_wizard_step( $settings );
+		$steps    = $this->build_wizard_steps( $settings );
+		$notice   = isset( $_GET['burrow_notice'] ) ? sanitize_text_field( wp_unslash( $_GET['burrow_notice'] ) ) : '';
+		$is_error = isset( $_GET['burrow_error'] ) && '1' === (string) $_GET['burrow_error'];
 		?>
-		<input
-			type="text"
-			id="burrow_api_key"
-			name="burrow_api_key"
-			value="<?php echo esc_attr( $api_key ); ?>"
-			class="regular-text"
-			placeholder="<?php esc_attr_e( 'Enter your Burrow API key', 'burrow' ); ?>"
-		/>
-		<p class="description">
-			<?php
-			printf(
-				/* translators: %s: Burrow website URL */
-				esc_html__( 'Find your API key in the %s dashboard.', 'burrow' ),
-				'<a href="' . esc_url( 'https://useburrow.com' ) . '" target="_blank" rel="noopener noreferrer">Burrow</a>'
-			);
-			?>
-		</p>
+		<div class="wrap">
+			<p><img src="<?php echo esc_attr( $this->get_brand_logo_src() ); ?>" alt="Burrow" style="max-width:220px;height:auto;margin:10px 0;display:block;" /></p>
+			<h1><?php esc_html_e( 'Onboarding Wizard', 'burrow' ); ?></h1>
+			<style>
+				.burrow-onboarding-layout {
+					display: grid;
+					grid-template-columns: 260px minmax(0, 1fr);
+					gap: 24px;
+					align-items: start;
+					margin-top: 14px;
+				}
+				.burrow-wizard-sidebar {
+					background: #fff;
+					border: 1px solid #dcdcde;
+					border-radius: 6px;
+					padding: 14px 12px;
+					position: sticky;
+					top: 32px;
+				}
+				.burrow-wizard-content {
+					min-width: 0;
+				}
+				.burrow-step-intro {
+					margin: 2px 0 10px 0;
+				}
+				.burrow-step-intro .description {
+					margin: 8px 0 0 0;
+				}
+				.burrow-step-header {
+					margin: 2px 0 12px 0;
+				}
+				.burrow-step-header .description {
+					margin: 8px 0 0 0;
+				}
+				.burrow-step-title {
+					display: inline-flex;
+					align-items: center;
+					gap: 8px;
+				}
+				.burrow-step-title .burrow-integration-icon {
+					width: 20px;
+					height: 20px;
+					display: inline-block;
+					vertical-align: middle;
+				}
+				.burrow-step-title .burrow-menu-glyph {
+					width: 24px;
+					height: 24px;
+					object-fit: contain;
+					flex: 0 0 24px;
+				}
+				.burrow-step-title .dashicons {
+					width: 24px;
+					height: 24px;
+					font-size: 24px;
+					line-height: 24px;
+					color: #2271b1;
+				}
+				.burrow-wizard-steps {
+					list-style: none;
+					margin: 0;
+					padding: 0;
+				}
+				.burrow-wizard-steps li {
+					margin: 0;
+					padding: 0;
+					border-left: 2px solid #dcdcde;
+				}
+				.burrow-wizard-steps a {
+					display: block;
+					padding: 8px 8px 8px 12px;
+					text-decoration: none;
+					color: #1d2327;
+				}
+				.burrow-wizard-steps li.is-current {
+					border-left-color: #2271b1;
+				}
+				.burrow-wizard-steps li.is-current a {
+					font-weight: 700;
+					color: #2271b1;
+					background: #f0f6fc;
+				}
+				.burrow-wizard-step-num {
+					color: #50575e;
+					margin-right: 6px;
+				}
+				.burrow-sidebar-back {
+					margin-top: 14px;
+					padding-top: 10px;
+					border-top: 1px solid #e2e4e7;
+				}
+				.burrow-sidebar-back a {
+					text-decoration: none;
+				}
+				@media (max-width: 1024px) {
+					.burrow-onboarding-layout {
+						grid-template-columns: 1fr;
+					}
+					.burrow-wizard-sidebar {
+						position: static;
+					}
+				}
+			</style>
+			<?php if ( $notice ) : ?>
+				<div class="notice <?php echo $is_error ? 'notice-error' : 'notice-success'; ?>"><p><?php echo esc_html( $notice ); ?></p></div>
+			<?php endif; ?>
+			<div class="burrow-step-header">
+				<?php if ( 'connection' === $step ) : ?>
+					<?php $this->render_step_heading( 'connection', __( 'Step 1: Connect to Burrow', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Enter your Burrow base URL and API key so we can validate access and discover your available projects.', 'burrow' ); ?></p>
+				<?php elseif ( 'project' === $step ) : ?>
+					<?php $this->render_step_heading( 'project', __( 'Step 2: Select Project', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Choose where events and contracts from this site should be routed in Burrow.', 'burrow' ); ?></p>
+				<?php elseif ( 'integrations' === $step ) : ?>
+					<?php $this->render_step_heading( 'integrations', __( 'Step 3: Select Integrations', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Select the installed plugins you want to configure. You can enable one or many and continue through each setup step.', 'burrow' ); ?></p>
+				<?php elseif ( 'gravity-forms' === $step ) : ?>
+					<?php $this->render_step_heading( 'gravity-forms', __( 'Gravity Forms Setup', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Select the forms and fields you want to include in Burrow contracts.', 'burrow' ); ?></p>
+				<?php elseif ( 'contact-form-7' === $step ) : ?>
+					<?php $this->render_step_heading( 'contact-form-7', __( 'Contact Form 7 Setup', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Choose tracking mode for each Contact Form 7 form.', 'burrow' ); ?></p>
+				<?php elseif ( 'ninja-forms' === $step ) : ?>
+					<?php $this->render_step_heading( 'ninja-forms', __( 'Ninja Forms Setup', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Choose tracking mode for each Ninja Form.', 'burrow' ); ?></p>
+				<?php elseif ( 'fluent-forms' === $step ) : ?>
+					<?php $this->render_step_heading( 'fluent-forms', __( 'Fluent Forms Setup', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Choose tracking mode for each Fluent Form.', 'burrow' ); ?></p>
+				<?php elseif ( 'woocommerce' === $step ) : ?>
+					<?php $this->render_step_heading( 'woocommerce', __( 'WooCommerce Setup', 'burrow' ) ); ?>
+				<?php elseif ( 'backfill' === $step ) : ?>
+					<?php $this->render_step_heading( 'backfill', __( 'Backfill', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Optionally backfill historical form events after contracts are finalized.', 'burrow' ); ?></p>
+				<?php else : ?>
+					<?php $this->render_step_heading( 'review', __( 'Review & Finish', 'burrow' ) ); ?>
+				<?php endif; ?>
+			</div>
+			<div class="burrow-onboarding-layout">
+				<aside class="burrow-wizard-sidebar">
+					<?php $this->render_wizard_steps( $step, $steps, $settings ); ?>
+				</aside>
+				<section class="burrow-wizard-content">
+					<?php if ( 'connection' === $step ) : ?>
+						<form method="post">
+							<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+							<input type="hidden" name="burrow_action" value="setup_connection" />
+							<table class="form-table" role="presentation">
+								<tr><th><label for="base_url"><?php esc_html_e( 'Burrow Base URL', 'burrow' ); ?></label></th><td><input name="base_url" id="base_url" type="url" class="regular-text" value="<?php echo esc_attr( $settings['base_url'] ); ?>" placeholder="https://api.useburrow.com" /></td></tr>
+								<tr><th><label for="api_key"><?php esc_html_e( 'API Key', 'burrow' ); ?></label></th><td><input name="api_key" id="api_key" type="text" class="regular-text" value="<?php echo esc_attr( $settings['api_key'] ); ?>" /><p class="description"><?php esc_html_e( 'Find your API key here:', 'burrow' ); ?> <a href="https://app.useburrow.com/settings" target="_blank" rel="noopener noreferrer">app.useburrow.com/settings</a></p></td></tr>
+							</table>
+							<?php submit_button( __( 'Validate Connection & Continue', 'burrow' ) ); ?>
+						</form>
+					<?php elseif ( 'project' === $step ) : ?>
+						<?php $this->render_project_picker( $settings ); ?>
+					<?php elseif ( 'integrations' === $step ) : ?>
+						<?php $this->render_integration_selection_step( $settings ); ?>
+					<?php elseif ( 'gravity-forms' === $step ) : ?>
+						<?php $this->render_gravity_forms_step(); ?>
+					<?php elseif ( 'contact-form-7' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'contact-form-7', $this->list_contact_form_7_forms() ); ?>
+					<?php elseif ( 'ninja-forms' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'ninja-forms', $this->list_ninja_forms() ); ?>
+					<?php elseif ( 'fluent-forms' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'fluent-forms', $this->list_fluent_forms() ); ?>
+					<?php elseif ( 'woocommerce' === $step ) : ?>
+						<?php $this->render_woocommerce_step(); ?>
+					<?php elseif ( 'backfill' === $step ) : ?>
+						<?php $this->render_backfill_step( $settings ); ?>
+					<?php else : ?>
+						<?php $this->render_review_step( $settings ); ?>
+					<?php endif; ?>
+				</section>
+			</div>
+		</div>
 		<?php
 	}
 
-	/**
-	 * Render the plugin settings page.
-	 */
 	public function render_settings_page() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
+		$status_counts = $this->outbox_repo->get_status_counts();
+		$event_counts  = $this->outbox_repo->get_event_counts();
+		$failed_rows   = $this->outbox_repo->get_failed_records( 100 );
+		$settings      = $this->options_repo->get_settings();
+		$retention_days = isset( $settings['outbox_retention_days'] ) ? max( 1, (int) $settings['outbox_retention_days'] ) : 30;
+		$labels        = $this->integration_labels();
+		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		$contract_rows = array();
+		foreach ( $contracts as $contract ) {
+			if ( ! is_array( $contract ) || empty( $contract['enabled'] ) ) {
+				continue;
+			}
+			$provider_key = (string) ( $contract['provider'] ?? '' );
+			$contract_rows[] = array(
+				'provider'      => (string) ( $labels[ $provider_key ] ?? $provider_key ),
+				'formName'      => (string) ( $contract['formName'] ?? '' ),
+				'externalFormId'=> (string) ( $contract['externalFormId'] ?? '' ),
+				'mode'          => (string) ( $contract['mode'] ?? ( ! empty( $contract['countOnly'] ) ? 'count_only' : 'custom_fields' ) ),
+				'icon'          => (string) ( $contract['icon'] ?? '' ),
+				'mappingCount'  => is_array( $contract['fieldMappings'] ?? null ) ? count( $contract['fieldMappings'] ) : 0,
+			);
+		}
 		?>
 		<div class="wrap">
-			<h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
-			<form action="options.php" method="post">
-				<?php
-				settings_fields( 'burrow_settings_group' );
-				do_settings_sections( 'burrow' );
-				submit_button( __( 'Save Settings', 'burrow' ) );
-				?>
+			<?php $this->render_admin_notice_from_query(); ?>
+			<?php $this->render_burrow_page_header( __( 'Burrow Operations', 'burrow' ) ); ?>
+			<?php $this->render_status_badge_styles(); ?>
+			<p><strong><?php esc_html_e( 'Connected project:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( $settings['routing']['projectId'] ?? '' ) ); ?></p>
+			<p>
+				<strong><?php esc_html_e( 'Queue status:', 'burrow' ); ?></strong>
+				<?php echo $this->render_status_badge( 'pending', (int) $status_counts['pending'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<?php echo $this->render_status_badge( 'retrying', (int) $status_counts['retrying'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<?php echo $this->render_status_badge( 'failed', (int) $status_counts['failed'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+			</p>
+			<p><?php printf( esc_html__( 'Woo pending order events: %1$d | Woo pending item events: %2$d', 'burrow' ), (int) ( $event_counts['ecommerce.order.placed'] ?? 0 ), (int) ( $event_counts['ecommerce.item.purchased'] ?? 0 ) ); ?></p>
+
+			<h2 style="margin-top:20px;"><?php esc_html_e( 'Outbox Settings', 'burrow' ); ?></h2>
+			<form method="post" style="max-width:560px;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="save_operations_settings" />
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><label for="outbox_retention_days"><?php esc_html_e( 'Auto-delete sent/failed after', 'burrow' ); ?></label></th>
+						<td>
+							<input id="outbox_retention_days" name="outbox_retention_days" type="number" min="1" max="365" step="1" value="<?php echo esc_attr( (string) $retention_days ); ?>" class="small-text" />
+							<span><?php esc_html_e( 'days', 'burrow' ); ?></span>
+							<p class="description"><?php esc_html_e( 'Cleanup runs daily and removes sent/failed records older than this retention window.', 'burrow' ); ?></p>
+						</td>
+					</tr>
+				</table>
+				<?php submit_button( __( 'Save Operations Settings', 'burrow' ), 'secondary', 'submit', false ); ?>
 			</form>
+
+			<h2 style="margin-top:20px;"><?php esc_html_e( 'Active Form Contracts', 'burrow' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'These are the currently enabled contracts in plugin settings. Sync Contracts pushes these to Burrow.', 'burrow' ); ?></p>
+			<table class="widefat striped" style="max-width:1200px;">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Provider', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Form', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Form ID', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Mode', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Icon override', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Mapped fields', 'burrow' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php if ( empty( $contract_rows ) ) : ?>
+						<tr><td colspan="6"><?php esc_html_e( 'No active contracts configured yet.', 'burrow' ); ?></td></tr>
+					<?php else : ?>
+						<?php foreach ( $contract_rows as $row ) : ?>
+							<tr>
+								<td><?php echo esc_html( $row['provider'] ); ?></td>
+								<td><?php echo esc_html( $row['formName'] ); ?></td>
+								<td><?php echo esc_html( $row['externalFormId'] ); ?></td>
+								<td><?php echo esc_html( $row['mode'] ); ?></td>
+								<td><?php echo '' !== $row['icon'] ? '<code>' . esc_html( $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'SDK default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
+								<td><?php echo esc_html( (string) $row['mappingCount'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					<?php endif; ?>
+				</tbody>
+			</table>
+
+			<h2 style="margin-top:24px;"><?php esc_html_e( 'Failed Outbox Records', 'burrow' ); ?></h2>
+			<p class="description"><?php esc_html_e( 'Most recent failed records. Replay will re-queue a failed record for delivery.', 'burrow' ); ?></p>
+			<table class="widefat striped" style="max-width:1400px;">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'ID', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Event', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Event key', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Status', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Attempts', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Last error', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Updated', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php if ( empty( $failed_rows ) ) : ?>
+						<tr><td colspan="8"><?php esc_html_e( 'No failed records right now.', 'burrow' ); ?></td></tr>
+					<?php else : ?>
+						<?php foreach ( $failed_rows as $row ) : ?>
+							<tr>
+								<td><?php echo esc_html( (string) ( $row['id'] ?? '' ) ); ?></td>
+								<td><code><?php echo esc_html( (string) ( $row['event_name'] ?? '' ) ); ?></code></td>
+								<td><code><?php echo esc_html( (string) ( $row['event_key'] ?? '' ) ); ?></code></td>
+								<td><?php echo $this->render_status_badge( 'failed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
+								<td><?php echo esc_html( (string) ( (int) ( $row['attempt_count'] ?? 0 ) . ' / ' . (int) ( $row['max_attempts'] ?? 0 ) ) ); ?></td>
+								<td><?php echo esc_html( (string) ( $row['last_error'] ?? '' ) ); ?></td>
+								<td><?php echo esc_html( (string) ( $row['updated_at'] ?? '' ) ); ?></td>
+								<td>
+									<form method="post" style="margin:0;">
+										<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+										<input type="hidden" name="burrow_action" value="replay_failed" />
+										<input type="hidden" name="return_step" value="operations" />
+										<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) ( $row['id'] ?? 0 ) ); ?>" />
+										<?php submit_button( __( 'Replay', 'burrow' ), 'secondary small', '', false ); ?>
+									</form>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					<?php endif; ?>
+				</tbody>
+			</table>
 		</div>
 		<?php
+	}
+
+	public function render_outbox_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$status = isset( $_GET['status'] ) ? sanitize_key( (string) wp_unslash( $_GET['status'] ) ) : 'failed';
+		$search = isset( $_GET['q'] ) ? sanitize_text_field( (string) wp_unslash( $_GET['q'] ) ) : '';
+		$paged  = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
+		$per_page = 50;
+		$allowed = array( 'all', 'pending', 'retrying', 'sent', 'failed' );
+		if ( ! in_array( $status, $allowed, true ) ) {
+			$status = 'failed';
+		}
+		$query_status = 'all' === $status ? '' : $status;
+		$offset       = ( $paged - 1 ) * $per_page;
+		$total_rows   = $this->outbox_repo->count_records( $query_status, $search );
+		$total_pages  = max( 1, (int) ceil( $total_rows / $per_page ) );
+		if ( $paged > $total_pages ) {
+			$paged  = $total_pages;
+			$offset = ( $paged - 1 ) * $per_page;
+		}
+		$rows = $this->outbox_repo->get_records( $query_status, $per_page, $offset, $search );
+		$base_url = admin_url( 'admin.php?page=burrow-outbox' );
+		$tabs = array(
+			'all'      => __( 'All', 'burrow' ),
+			'pending'  => __( 'Pending', 'burrow' ),
+			'retrying' => __( 'Retrying', 'burrow' ),
+			'failed'   => __( 'Failed', 'burrow' ),
+			'sent'     => __( 'Sent', 'burrow' ),
+		);
+		?>
+		<div class="wrap">
+			<?php $this->render_admin_notice_from_query(); ?>
+			<?php $this->render_burrow_page_header( __( 'Burrow Outbox', 'burrow' ) ); ?>
+			<?php $this->render_status_badge_styles(); ?>
+			<p class="description"><?php esc_html_e( 'Outbox records for delivery debugging with status filters, search, and pagination.', 'burrow' ); ?></p>
+			<h2 class="nav-tab-wrapper" style="margin-bottom:12px;">
+				<?php foreach ( $tabs as $tab_key => $tab_label ) : ?>
+					<?php $tab_url = add_query_arg( array( 'page' => 'burrow-outbox', 'status' => $tab_key, 'q' => $search ), $base_url ); ?>
+					<a href="<?php echo esc_url( $tab_url ); ?>" class="nav-tab <?php echo $status === $tab_key ? 'nav-tab-active' : ''; ?>"><?php echo esc_html( $tab_label ); ?></a>
+				<?php endforeach; ?>
+			</h2>
+			<form method="get" style="margin:12px 0; display:flex; gap:8px; align-items:center;">
+				<input type="hidden" name="page" value="burrow-outbox" />
+				<input type="hidden" name="status" value="<?php echo esc_attr( $status ); ?>" />
+				<label for="burrow-outbox-search" class="screen-reader-text"><?php esc_html_e( 'Search outbox', 'burrow' ); ?></label>
+				<input id="burrow-outbox-search" type="search" name="q" value="<?php echo esc_attr( $search ); ?>" placeholder="<?php esc_attr_e( 'Search event, key, or error', 'burrow' ); ?>" class="regular-text" />
+				<?php submit_button( __( 'Search', 'burrow' ), 'secondary', '', false ); ?>
+				<?php if ( '' !== $search ) : ?>
+					<a class="button" href="<?php echo esc_url( add_query_arg( array( 'page' => 'burrow-outbox', 'status' => $status ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Clear', 'burrow' ); ?></a>
+				<?php endif; ?>
+			</form>
+			<p><strong><?php echo esc_html( sprintf( __( 'Showing %1$d-%2$d of %3$d records', 'burrow' ), 0 === $total_rows ? 0 : $offset + 1, min( $offset + count( $rows ), $total_rows ), $total_rows ) ); ?></strong></p>
+			<table class="widefat striped">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'ID', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Status', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Event', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Event key', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Attempts', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Next attempt', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Last error', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Updated', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php if ( empty( $rows ) ) : ?>
+						<tr><td colspan="9"><?php esc_html_e( 'No outbox records found for this filter.', 'burrow' ); ?></td></tr>
+					<?php else : ?>
+						<?php foreach ( $rows as $row ) : ?>
+							<tr>
+								<td><?php echo esc_html( (string) ( $row['id'] ?? '' ) ); ?></td>
+								<td><?php echo $this->render_status_badge( (string) ( $row['status'] ?? '' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
+								<td><code><?php echo esc_html( (string) ( $row['event_name'] ?? '' ) ); ?></code></td>
+								<td><code><?php echo esc_html( (string) ( $row['event_key'] ?? '' ) ); ?></code></td>
+								<td><?php echo esc_html( (string) ( (int) ( $row['attempt_count'] ?? 0 ) . ' / ' . (int) ( $row['max_attempts'] ?? 0 ) ) ); ?></td>
+								<td><?php echo esc_html( (string) ( $row['next_attempt_at'] ?? '' ) ); ?></td>
+								<td><?php echo esc_html( (string) ( $row['last_error'] ?? '' ) ); ?></td>
+								<td><?php echo esc_html( (string) ( $row['updated_at'] ?? '' ) ); ?></td>
+								<td>
+									<?php if ( 'failed' === ( $row['status'] ?? '' ) ) : ?>
+										<form method="post" style="margin:0;">
+											<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+											<input type="hidden" name="burrow_action" value="replay_failed" />
+											<input type="hidden" name="return_step" value="outbox" />
+											<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) ( $row['id'] ?? 0 ) ); ?>" />
+											<?php submit_button( __( 'Replay', 'burrow' ), 'secondary small', '', false ); ?>
+										</form>
+									<?php else : ?>
+										<span class="description">&mdash;</span>
+									<?php endif; ?>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					<?php endif; ?>
+				</tbody>
+			</table>
+			<?php
+			$pagination = paginate_links(
+				array(
+					'base'      => add_query_arg(
+						array(
+							'page'   => 'burrow-outbox',
+							'status' => $status,
+							'q'      => $search,
+							'paged'  => '%#%',
+						),
+						admin_url( 'admin.php' )
+					),
+					'format'    => '',
+					'current'   => $paged,
+					'total'     => $total_pages,
+					'prev_text' => __( '&laquo;', 'burrow' ),
+					'next_text' => __( '&raquo;', 'burrow' ),
+				)
+			);
+			if ( is_string( $pagination ) && '' !== $pagination ) :
+				?>
+				<div class="tablenav"><div class="tablenav-pages"><?php echo wp_kses_post( $pagination ); ?></div></div>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	private function render_wizard_steps( $step, array $steps, array $settings ) {
+		echo '<ol class="burrow-wizard-steps">';
+		$position = 0;
+		foreach ( $steps as $key => $label ) {
+			$position++;
+			$url = add_query_arg(
+				array(
+					'page' => 'burrow-onboarding',
+					'step' => $key,
+				),
+				admin_url( 'admin.php' )
+			);
+			$class = $key === $step ? 'is-current' : '';
+			$integration_attr = '';
+			if ( in_array( $key, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' ), true ) ) {
+				$integration_attr = ' data-integration="' . esc_attr( $key ) . '"';
+			}
+			echo '<li class="' . esc_attr( $class ) . '" data-step="' . esc_attr( $key ) . '"' . $integration_attr . '>';
+			echo '<a href="' . esc_url( $url ) . '"><span class="burrow-wizard-step-num">' . esc_html( (string) $position ) . '.</span>' . esc_html( $label ) . '</a>';
+			echo '</li>';
+		}
+		echo '</ol>';
+		$prev_step = $this->previous_step( $settings, $step );
+		if ( '' !== $prev_step ) {
+			$prev_url = add_query_arg(
+				array(
+					'page' => 'burrow-onboarding',
+					'step' => $prev_step,
+				),
+				admin_url( 'admin.php' )
+			);
+			echo '<div class="burrow-sidebar-back"><a href="' . esc_url( $prev_url ) . '">&laquo; ' . esc_html__( 'Back', 'burrow' ) . '</a></div>';
+		}
+	}
+
+	private function render_project_picker( array $settings ) {
+		$candidates = isset( $settings['project_candidates'] ) && is_array( $settings['project_candidates'] ) ? $settings['project_candidates'] : array();
+		if ( empty( $candidates ) ) {
+			echo '<p>' . esc_html__( 'No projects returned yet. Complete Step 1 again to fetch projects.', 'burrow' ) . '</p>';
+			return;
+		}
+		?>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="select_project" />
+			<table class="widefat striped"><thead><tr><th><?php esc_html_e( 'Select', 'burrow' ); ?></th><th><?php esc_html_e( 'Client', 'burrow' ); ?></th><th><?php esc_html_e( 'Project', 'burrow' ); ?></th><th><?php esc_html_e( 'Site', 'burrow' ); ?></th></tr></thead><tbody>
+			<?php foreach ( $candidates as $index => $candidate ) : ?><tr><td><input type="radio" name="project_index" value="<?php echo esc_attr( (string) $index ); ?>" required /></td><td><?php echo esc_html( (string) $candidate['clientName'] ); ?></td><td><?php echo esc_html( (string) $candidate['projectName'] ); ?></td><td><?php echo esc_html( (string) $candidate['siteUrl'] ); ?></td></tr><?php endforeach; ?>
+			</tbody></table>
+			<?php submit_button( __( 'Use Selected Project', 'burrow' ) ); ?>
+		</form>
+		<?php
+	}
+
+	private function render_integration_selection_step( array $settings ) {
+		$detected = $this->detected_integrations();
+		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$labels   = $this->integration_labels();
+		$timeline_labels = array(
+			'gravity-forms'  => 'Gravity Forms',
+			'contact-form-7' => 'Contact Form 7',
+			'ninja-forms'    => 'Ninja Forms',
+			'fluent-forms'   => 'Fluent Forms',
+			'woocommerce'    => 'WooCommerce',
+		);
+		$provider_order = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' );
+		?>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="save_integrations" />
+			<style>
+				.burrow-integrations-table th:first-child,
+				.burrow-integrations-table td:first-child {
+					width: 90px;
+					text-align: left;
+					vertical-align: middle;
+					padding-left: 16px;
+				}
+				.burrow-integrations-table .burrow-select-all-label {
+					display: inline-flex;
+					align-items: center;
+					gap: 6px;
+					justify-content: flex-start;
+				}
+				#burrow-select-all-integrations,
+				.burrow-integration-checkbox {
+					margin: 0;
+				}
+				.burrow-integration-label {
+					display: inline-flex;
+					align-items: center;
+					gap: 8px;
+				}
+				.burrow-integration-label .dashicons {
+					font-size: 18px;
+					width: 18px;
+					height: 18px;
+					color: #2271b1;
+				}
+				.burrow-integration-label .burrow-menu-glyph {
+					width: 18px;
+					height: 18px;
+					object-fit: contain;
+					/* normalize plugin glyphs toward the same blue tone */
+					filter: grayscale(1) brightness(0) saturate(100%) invert(34%) sepia(89%) saturate(955%) hue-rotate(178deg) brightness(90%) contrast(91%);
+				}
+				.burrow-gravity-form-block.burrow-count-only-active table {
+					opacity: 0.65;
+				}
+			</style>
+			<table class="widefat striped burrow-integrations-table">
+				<thead>
+					<tr>
+						<th>
+							<label for="burrow-select-all-integrations" class="burrow-select-all-label">
+								<input type="checkbox" id="burrow-select-all-integrations" />
+								<?php esc_html_e( 'Enable', 'burrow' ); ?>
+							</label>
+						</th>
+						<th><?php esc_html_e( 'Integration', 'burrow' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+			<?php foreach ( $detected as $key ) : ?>
+				<tr>
+					<td>
+						<input class="burrow-integration-checkbox" type="checkbox" name="integrations[]" value="<?php echo esc_attr( $key ); ?>" <?php checked( in_array( $key, $selected, true ) ); ?> />
+					</td>
+					<td>
+						<span class="burrow-integration-label">
+							<?php echo $this->get_integration_icon_markup( $key ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+							<span><?php echo esc_html( $labels[ $key ] ?? $key ); ?></span>
+						</span>
+					</td>
+				</tr>
+			<?php endforeach; ?>
+			</tbody></table>
+			<p class="description"><?php esc_html_e( 'Detected integrations are unchecked by default.', 'burrow' ); ?></p>
+			<?php submit_button( __( 'Continue', 'burrow' ) ); ?>
+		</form>
+		<script>
+			(function () {
+				const master = document.getElementById('burrow-select-all-integrations');
+				const boxes = Array.from(document.querySelectorAll('.burrow-integration-checkbox'));
+				const submit = document.querySelector('form [type="submit"]');
+				const timeline = document.querySelector('.burrow-wizard-steps');
+				const adminBase = <?php echo wp_json_encode( admin_url( 'admin.php?page=burrow-onboarding&step=' ) ); ?>;
+				const timelineLabels = <?php echo wp_json_encode( $timeline_labels ); ?>;
+				const providerOrder = <?php echo wp_json_encode( $provider_order ); ?>;
+				if (!master || !boxes.length) return;
+				const selectedIntegrations = () => boxes.filter((box) => box.checked).map((box) => box.value);
+				const syncTimeline = () => {
+					if (!timeline) return;
+					Array.from(timeline.querySelectorAll('li[data-integration]')).forEach((li) => li.remove());
+					const selected = selectedIntegrations();
+					const reviewStep = timeline.querySelector('li[data-step="review"]');
+					const ordered = providerOrder.filter((key) => selected.includes(key));
+					ordered.forEach((key) => {
+						if (!reviewStep) return;
+						const li = document.createElement('li');
+						li.setAttribute('data-step', key);
+						li.setAttribute('data-integration', key);
+						const link = document.createElement('a');
+						link.href = adminBase + encodeURIComponent(key);
+						const num = document.createElement('span');
+						num.className = 'burrow-wizard-step-num';
+						num.textContent = '0.';
+						link.appendChild(num);
+						link.appendChild(document.createTextNode(timelineLabels[key] || key));
+						li.appendChild(link);
+						timeline.insertBefore(li, reviewStep);
+					});
+					const visible = Array.from(timeline.querySelectorAll('li')).filter((li) => li.style.display !== 'none');
+					visible.forEach((li, index) => {
+						const marker = li.querySelector('.burrow-wizard-step-num');
+						if (marker) marker.textContent = `${index + 1}.`;
+					});
+				};
+				const sync = () => {
+					const checked = boxes.filter((box) => box.checked).length;
+					master.checked = checked === boxes.length;
+					master.indeterminate = checked > 0 && checked < boxes.length;
+					if (submit) {
+						submit.disabled = checked === 0;
+					}
+					syncTimeline();
+				};
+				master.addEventListener('change', () => {
+					boxes.forEach((box) => { box.checked = master.checked; });
+					sync();
+				});
+				boxes.forEach((box) => box.addEventListener('change', sync));
+				sync();
+			})();
+		</script>
+		<?php
+	}
+
+	private function render_gravity_forms_step() {
+		$forms = $this->list_gravity_forms();
+		if ( empty( $forms ) ) {
+			echo '<p>' . esc_html__( 'No active Gravity Forms found.', 'burrow' ) . '</p>';
+			return;
+		}
+		?>
+		<p class="description">
+			<?php esc_html_e( 'Target guide: properties are event details (context), while tags are report-friendly dimensions used for filtering, grouping, or charting.', 'burrow' ); ?>
+		</p>
+		<p class="description">
+			<?php esc_html_e( 'Tip: use "Count-only tracking" to send minimal events with formId, formName, submissionId, and timestamp even when no additional fields are selected.', 'burrow' ); ?>
+		</p>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="save_gravity_contracts" />
+			<?php foreach ( $forms as $form ) : ?>
+				<?php $form_id = (string) $form['id']; $form_name = (string) $form['title']; ?>
+				<div class="burrow-gravity-form-block" data-form-id="<?php echo esc_attr( $form_id ); ?>">
+					<h3><?php echo esc_html( $form_name ); ?></h3>
+					<fieldset style="margin:0 0 10px 0;">
+						<legend><strong><?php esc_html_e( 'Tracking mode', 'burrow' ); ?></strong></legend>
+						<label style="margin-right:14px;"><input class="burrow-form-mode-radio" type="radio" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="off" checked /> <?php esc_html_e( 'Off', 'burrow' ); ?></label>
+						<label style="margin-right:14px;"><input class="burrow-form-mode-radio" type="radio" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="count_only" /> <?php esc_html_e( 'Count-only', 'burrow' ); ?></label>
+						<label><input class="burrow-form-mode-radio" type="radio" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="custom_fields" /> <?php esc_html_e( 'Custom fields', 'burrow' ); ?></label>
+					</fieldset>
+					<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][externalFormId]" value="<?php echo esc_attr( $form_id ); ?>" />
+					<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][formName]" value="<?php echo esc_attr( $form_name ); ?>" />
+					<table class="widefat striped"><thead><tr><th>Include</th><th>Field</th><th>Type</th><th>Canonical Key</th><th>Target</th><th>Display Label</th></tr></thead><tbody>
+					<?php foreach ( (array) $form['fields'] as $field ) : ?>
+						<?php $field_id = (string) $field->id; $field_label = (string) $field->label; $field_type = (string) $field->type; $suggested = $this->is_suggested_field_type( $field_type ); ?>
+						<tr>
+							<td><input class="burrow-form-field-checkbox" type="checkbox" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][include]" value="1" <?php checked( $suggested ); ?> /></td>
+							<td><?php echo esc_html( $field_label ); ?></td>
+							<td><?php echo esc_html( $field_type ); ?></td>
+							<td><input type="text" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $this->label_to_canonical_key( $field_label ) ); ?>" /></td>
+							<td><select name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][target]"><option value="properties">properties</option><option value="tags" <?php selected( $suggested ); ?>>tags</option></select></td>
+							<td><input type="text" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][displayLabelOverride]" value="<?php echo esc_attr( $field_label ); ?>" /></td>
+						</tr>
+						<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_id ); ?>" />
+						<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][sourceLabel]" value="<?php echo esc_attr( $field_label ); ?>" />
+						<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][dataType]" value="string" />
+					<?php endforeach; ?>
+					</tbody></table>
+				</div>
+			<?php endforeach; ?>
+			<?php submit_button( __( 'Save Gravity Forms Settings', 'burrow' ) ); ?>
+		</form>
+		<script>
+			(function () {
+				const forms = Array.from(document.querySelectorAll('.burrow-gravity-form-block'));
+				if (!forms.length) return;
+				forms.forEach((block) => {
+					const modeInputs = Array.from(block.querySelectorAll('.burrow-form-mode-radio'));
+					const fields = Array.from(block.querySelectorAll('.burrow-form-field-checkbox'));
+					if (!modeInputs.length) return;
+					const controls = Array.from(block.querySelectorAll('table input, table select, table textarea'));
+					const currentMode = () => {
+						const picked = modeInputs.find((input) => input.checked);
+						return picked ? picked.value : 'off';
+					};
+					const sync = () => {
+						const mode = currentMode();
+						const fieldsEnabled = mode === 'custom_fields';
+						if (!fieldsEnabled) {
+							fields.forEach((field) => { field.checked = false; });
+						}
+						controls.forEach((control) => {
+							if (!fieldsEnabled) {
+								control.setAttribute('disabled', 'disabled');
+							} else {
+								control.removeAttribute('disabled');
+							}
+						});
+						block.classList.toggle('burrow-count-only-active', mode === 'count_only');
+					};
+					fields.forEach((field) => field.addEventListener('change', sync));
+					modeInputs.forEach((input) => input.addEventListener('change', sync));
+					sync();
+				});
+			})();
+		</script>
+		<?php
+	}
+
+	private function render_woocommerce_step() {
+		$settings = $this->options_repo->get_settings();
+		$mode     = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+		if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
+			$mode = 'track';
+		}
+		?>
+		<p><?php esc_html_e( 'Choose how WooCommerce should be handled for this project.', 'burrow' ); ?></p>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="confirm_woocommerce" />
+			<fieldset style="margin:12px 0 16px 0;">
+				<label style="display:block;margin-bottom:8px;">
+					<input type="radio" name="woocommerce_mode" value="track" <?php checked( 'track', $mode ); ?> />
+					<?php esc_html_e( 'Track WooCommerce events', 'burrow' ); ?>
+				</label>
+				<label style="display:block;">
+					<input type="radio" name="woocommerce_mode" value="off" <?php checked( 'off', $mode ); ?> />
+					<?php esc_html_e( 'Do not track WooCommerce events', 'burrow' ); ?>
+				</label>
+			</fieldset>
+			<?php submit_button( __( 'Save and Continue', 'burrow' ) ); ?>
+		</form>
+		<?php
+	}
+
+	private function render_simple_forms_provider_step( $provider, array $forms ) {
+		$provider = sanitize_key( (string) $provider );
+		$labels   = $this->integration_labels();
+		$settings = $this->options_repo->get_settings();
+		$existing = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		if ( empty( $forms ) ) {
+			echo '<p>' . esc_html__( 'No active forms found for this provider.', 'burrow' ) . '</p>';
+		}
+		$supports_custom_fields = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true );
+		?>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="save_provider_contracts" />
+			<input type="hidden" name="provider" value="<?php echo esc_attr( $provider ); ?>" />
+			<?php foreach ( $forms as $form ) : ?>
+				<?php
+				$form_id   = isset( $form['id'] ) ? (string) $form['id'] : '';
+				$form_name = isset( $form['title'] ) ? (string) $form['title'] : $form_id;
+				$contract_key = $provider . ':' . $form_id;
+				$current      = isset( $existing[ $contract_key ] ) && is_array( $existing[ $contract_key ] ) ? $existing[ $contract_key ] : array();
+				$current_mode = isset( $current['mode'] ) ? sanitize_key( (string) $current['mode'] ) : 'off';
+				if ( ! in_array( $current_mode, array( 'off', 'count_only', 'custom_fields' ), true ) ) {
+					$current_mode = ! empty( $current['countOnly'] ) ? 'count_only' : 'off';
+				}
+				$existing_mappings = isset( $current['fieldMappings'] ) && is_array( $current['fieldMappings'] ) ? $current['fieldMappings'] : array();
+				$mapped_lookup = array();
+				foreach ( $existing_mappings as $mapping ) {
+					if ( ! is_array( $mapping ) || empty( $mapping['externalFieldId'] ) ) {
+						continue;
+					}
+					$mapped_lookup[ (string) $mapping['externalFieldId'] ] = $mapping;
+				}
+				$provider_fields = array();
+				if ( 'contact-form-7' === $provider ) {
+					$provider_fields = $this->list_contact_form_7_fields( $form_id );
+				} elseif ( 'ninja-forms' === $provider ) {
+					$provider_fields = $this->list_ninja_form_fields( $form_id );
+				} elseif ( 'fluent-forms' === $provider ) {
+					$provider_fields = $this->list_fluent_form_fields( $form_id );
+				}
+				?>
+				<div class="burrow-provider-form-block <?php echo $supports_custom_fields ? 'burrow-mapped-provider-form-block' : ''; ?>" data-form-id="<?php echo esc_attr( $form_id ); ?>">
+					<h3><?php echo esc_html( $form_name ); ?></h3>
+					<fieldset style="margin:0 0 12px 0;">
+						<legend><strong><?php esc_html_e( 'Tracking mode', 'burrow' ); ?></strong></legend>
+						<label style="margin-right:14px;"><input class="burrow-provider-mode-radio" type="radio" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="off" <?php checked( 'off', $current_mode ); ?> /> <?php esc_html_e( 'Off', 'burrow' ); ?></label>
+						<label style="margin-right:14px;"><input class="burrow-provider-mode-radio" type="radio" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="count_only" <?php checked( 'count_only', $current_mode ); ?> /> <?php esc_html_e( 'Count-only', 'burrow' ); ?></label>
+						<?php if ( $supports_custom_fields ) : ?>
+							<label><input class="burrow-provider-mode-radio" type="radio" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][mode]" value="custom_fields" <?php checked( 'custom_fields', $current_mode ); ?> /> <?php esc_html_e( 'Custom fields', 'burrow' ); ?></label>
+						<?php endif; ?>
+					</fieldset>
+					<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][externalFormId]" value="<?php echo esc_attr( $form_id ); ?>" />
+					<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][formName]" value="<?php echo esc_attr( $form_name ); ?>" />
+					<?php if ( $supports_custom_fields ) : ?>
+						<?php if ( empty( $provider_fields ) ) : ?>
+							<p class="description"><?php esc_html_e( 'No fields were detected for this form.', 'burrow' ); ?></p>
+						<?php else : ?>
+							<table class="widefat striped">
+								<thead><tr><th><?php esc_html_e( 'Include', 'burrow' ); ?></th><th><?php esc_html_e( 'Field', 'burrow' ); ?></th><th><?php esc_html_e( 'Type', 'burrow' ); ?></th><th><?php esc_html_e( 'Canonical Key', 'burrow' ); ?></th><th><?php esc_html_e( 'Target', 'burrow' ); ?></th></tr></thead>
+								<tbody>
+								<?php foreach ( $provider_fields as $field ) : ?>
+									<?php
+									$field_external_id = (string) ( $field['id'] ?? '' );
+									$field_name = (string) ( $field['name'] ?? $field_external_id );
+									$field_type = (string) ( $field['type'] ?? 'text' );
+									$existing_map = isset( $mapped_lookup[ $field_external_id ] ) ? $mapped_lookup[ $field_external_id ] : array();
+									$checked = ! empty( $existing_map );
+									$target = isset( $existing_map['target'] ) && 'tags' === $existing_map['target'] ? 'tags' : 'properties';
+									$canonical = isset( $existing_map['canonicalKey'] ) ? (string) $existing_map['canonicalKey'] : $this->label_to_canonical_key( $field_name );
+									?>
+									<tr>
+										<td><input class="burrow-provider-field-checkbox" type="checkbox" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][include]" value="1" <?php checked( $checked ); ?> /></td>
+										<td><?php echo esc_html( $field_name ); ?></td>
+										<td><?php echo esc_html( $field_type ); ?></td>
+										<td><input type="text" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $canonical ); ?>" /></td>
+										<td><select name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][target]"><option value="properties" <?php selected( 'properties', $target ); ?>>properties</option><option value="tags" <?php selected( 'tags', $target ); ?>>tags</option></select></td>
+									</tr>
+									<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_external_id ); ?>" />
+									<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][sourceLabel]" value="<?php echo esc_attr( $field_name ); ?>" />
+									<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][dataType]" value="<?php echo esc_attr( $field_type ); ?>" />
+								<?php endforeach; ?>
+								</tbody>
+							</table>
+						<?php endif; ?>
+					<?php endif; ?>
+				</div>
+			<?php endforeach; ?>
+			<?php submit_button( sprintf( __( 'Save %s Settings', 'burrow' ), (string) ( $labels[ $provider ] ?? $provider ) ) ); ?>
+		</form>
+		<?php if ( $supports_custom_fields ) : ?>
+			<script>
+				(function () {
+					const forms = Array.from(document.querySelectorAll('.burrow-mapped-provider-form-block'));
+					if (!forms.length) return;
+					forms.forEach((block) => {
+						const modeInputs = Array.from(block.querySelectorAll('.burrow-provider-mode-radio'));
+						const fields = Array.from(block.querySelectorAll('.burrow-provider-field-checkbox'));
+						const controls = Array.from(block.querySelectorAll('table input, table select, table textarea'));
+						if (!modeInputs.length || !controls.length) return;
+						const currentMode = () => {
+							const picked = modeInputs.find((input) => input.checked);
+							return picked ? picked.value : 'off';
+						};
+						const sync = () => {
+							const mode = currentMode();
+							const fieldsEnabled = mode === 'custom_fields';
+							if (!fieldsEnabled) {
+								fields.forEach((field) => { field.checked = false; });
+							}
+							controls.forEach((control) => {
+								if (!fieldsEnabled) {
+									control.setAttribute('disabled', 'disabled');
+								} else {
+									control.removeAttribute('disabled');
+								}
+							});
+						};
+						modeInputs.forEach((input) => input.addEventListener('change', sync));
+						fields.forEach((field) => field.addEventListener('change', sync));
+						sync();
+					});
+				})();
+			</script>
+		<?php endif; ?>
+		<?php
+	}
+
+	private function render_review_step( array $settings ) {
+		$selected            = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$labels              = $this->integration_labels();
+		$provider_configured = isset( $settings['onboarding']['provider_configured'] ) && is_array( $settings['onboarding']['provider_configured'] )
+			? $settings['onboarding']['provider_configured']
+			: array();
+		$contracts           = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		$provider_contract_counts = array();
+		foreach ( $contracts as $contract ) {
+			if ( ! is_array( $contract ) || empty( $contract['enabled'] ) ) {
+				continue;
+			}
+			$provider_key = (string) ( $contract['provider'] ?? '' );
+			if ( '' === $provider_key ) {
+				continue;
+			}
+			if ( ! isset( $provider_contract_counts[ $provider_key ] ) ) {
+				$provider_contract_counts[ $provider_key ] = 0;
+			}
+			$provider_contract_counts[ $provider_key ]++;
+		}
+		$integration_rows    = array();
+		foreach ( $selected as $integration ) {
+			$integration = (string) $integration;
+			$status_label = __( 'Configured', 'burrow' );
+			if ( in_array( $integration, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true ) ) {
+				$has_contracts = ! empty( $provider_contract_counts[ $integration ] );
+				$is_provider_confirmed = ! empty( $provider_configured[ $integration ] );
+				if ( $has_contracts ) {
+					$status_label = __( 'Configured', 'burrow' );
+				} elseif ( $is_provider_confirmed ) {
+					$status_label = __( 'Configured (skipped)', 'burrow' );
+				} else {
+					$status_label = __( 'Needs setup', 'burrow' );
+				}
+			} elseif ( 'woocommerce' === $integration ) {
+				$status_label = ! empty( $settings['onboarding']['woocommerce_confirmed'] )
+					? __( 'Configured', 'burrow' )
+					: __( 'Needs setup', 'burrow' );
+			}
+			$integration_rows[] = array(
+				'name'   => (string) ( $labels[ $integration ] ?? $integration ),
+				'status' => $status_label,
+			);
+		}
+
+		$contract_rows = array();
+		foreach ( $contracts as $contract ) {
+			if ( ! is_array( $contract ) || empty( $contract['enabled'] ) ) {
+				continue;
+			}
+			$provider_key = (string) ( $contract['provider'] ?? '' );
+			$contract_rows[] = array(
+				'provider'      => (string) ( $labels[ $provider_key ] ?? $provider_key ),
+				'formName'      => (string) ( $contract['formName'] ?? '' ),
+				'externalFormId'=> (string) ( $contract['externalFormId'] ?? '' ),
+				'mode'          => (string) ( $contract['mode'] ?? ( ! empty( $contract['countOnly'] ) ? 'count_only' : 'custom_fields' ) ),
+				'mappingCount'  => is_array( $contract['fieldMappings'] ?? null ) ? count( $contract['fieldMappings'] ) : 0,
+			);
+		}
+		?>
+		<p><?php esc_html_e( 'Review exactly what will be sent to Burrow when contracts are synced.', 'burrow' ); ?></p>
+		<p class="description">
+			<?php
+			echo wp_kses(
+				__( 'Icon overrides use Lucide icon key names (for example <code>file-signature</code>, <code>shopping-cart</code>, <code>layers</code>). See <a href="https://lucide.dev/icons" target="_blank" rel="noopener noreferrer">lucide.dev/icons</a>.', 'burrow' ),
+				array(
+					'a'    => array(
+						'href'   => true,
+						'target' => true,
+						'rel'    => true,
+					),
+					'code' => array(),
+				)
+			);
+			?>
+		</p>
+		<h3><?php esc_html_e( 'Integration Readiness', 'burrow' ); ?></h3>
+		<table class="widefat striped" style="max-width:900px;">
+			<thead><tr><th><?php esc_html_e( 'Integration', 'burrow' ); ?></th><th><?php esc_html_e( 'Status', 'burrow' ); ?></th></tr></thead>
+			<tbody>
+			<?php if ( empty( $integration_rows ) ) : ?>
+				<tr><td colspan="2"><?php esc_html_e( 'No integrations selected.', 'burrow' ); ?></td></tr>
+			<?php else : ?>
+				<?php foreach ( $integration_rows as $row ) : ?>
+					<tr>
+						<td><?php echo esc_html( $row['name'] ); ?></td>
+						<td><?php echo esc_html( $row['status'] ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+			<?php endif; ?>
+			</tbody>
+		</table>
+
+		<h3 style="margin-top:16px;"><?php esc_html_e( 'Contracts To Sync', 'burrow' ); ?></h3>
+		<table class="widefat striped" style="max-width:1100px;">
+			<thead><tr><th><?php esc_html_e( 'Provider', 'burrow' ); ?></th><th><?php esc_html_e( 'Form', 'burrow' ); ?></th><th><?php esc_html_e( 'Form ID', 'burrow' ); ?></th><th><?php esc_html_e( 'Mode', 'burrow' ); ?></th><th><?php esc_html_e( 'Mapped fields', 'burrow' ); ?></th></tr></thead>
+			<tbody>
+			<?php if ( empty( $contract_rows ) ) : ?>
+				<tr><td colspan="5"><?php esc_html_e( 'No enabled contracts yet. Return to provider setup and enable at least one form.', 'burrow' ); ?></td></tr>
+			<?php else : ?>
+				<?php foreach ( $contract_rows as $row ) : ?>
+					<tr>
+						<td><?php echo esc_html( $row['provider'] ); ?></td>
+						<td><?php echo esc_html( '' !== $row['formName'] ? $row['formName'] : '-' ); ?></td>
+						<td><?php echo esc_html( '' !== $row['externalFormId'] ? $row['externalFormId'] : '-' ); ?></td>
+						<td><?php echo esc_html( $this->format_tracking_mode_label( $row['mode'] ) ); ?></td>
+						<td><?php echo esc_html( (string) (int) $row['mappingCount'] ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+			<?php endif; ?>
+			</tbody>
+		</table>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="sync_forms_contract" />
+			<p class="submit">
+				<?php submit_button( __( 'Sync Contracts to Burrow', 'burrow' ), 'secondary', 'submit', false ); ?>
+			</p>
+		</form>
+		<?php
+	}
+
+	private function format_tracking_mode_label( $mode ) {
+		$mode = sanitize_key( (string) $mode );
+		if ( 'count_only' === $mode ) {
+			return __( 'Count-only', 'burrow' );
+		}
+		if ( 'custom_fields' === $mode ) {
+			return __( 'Custom fields', 'burrow' );
+		}
+		if ( 'off' === $mode ) {
+			return __( 'Off', 'burrow' );
+		}
+		return ucfirst( str_replace( '_', ' ', $mode ) );
+	}
+
+	private function render_backfill_step( array $settings ) {
+		$job          = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+		$status       = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
+		$preset       = isset( $job['windowPreset'] ) ? sanitize_key( (string) $job['windowPreset'] ) : 'last_30_days';
+		$preset_labels = $this->backfill_window_presets();
+		$support_notes = $this->build_backfill_support_notes( $settings );
+		?>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="queue_backfill" />
+			<?php if ( ! empty( $support_notes ) ) : ?>
+				<ul class="description" style="margin:0 0 12px 18px;list-style:disc;">
+					<?php foreach ( $support_notes as $note ) : ?>
+						<li><?php echo wp_kses( (string) $note, array( 'a' => array( 'href' => array(), 'target' => array(), 'rel' => array() ) ) ); ?></li>
+					<?php endforeach; ?>
+				</ul>
+			<?php endif; ?>
+			<table class="form-table" role="presentation">
+				<tr>
+					<th><label for="backfill_window_preset"><?php esc_html_e( 'Window', 'burrow' ); ?></label></th>
+					<td>
+						<select id="backfill_window_preset" name="backfill_window_preset">
+							<?php foreach ( $preset_labels as $value => $label ) : ?>
+								<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $value, $preset ); ?>><?php echo esc_html( $label ); ?></option>
+							<?php endforeach; ?>
+						</select>
+						<p class="description"><?php esc_html_e( 'Predefined historical windows for backfill runs.', 'burrow' ); ?></p>
+					</td>
+				</tr>
+			</table>
+			<?php submit_button( __( 'Queue Backfill Job', 'burrow' ) ); ?>
+		</form>
+
+		<hr />
+		<h3><?php esc_html_e( 'Backfill Status', 'burrow' ); ?></h3>
+		<p><strong><?php esc_html_e( 'Status:', 'burrow' ); ?></strong> <?php echo esc_html( $status ); ?></p>
+		<p><strong><?php esc_html_e( 'Forms completed:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['completedForms'] ?? 0 ) ) ); ?> / <?php echo esc_html( (string) ( (int) ( $job['totalForms'] ?? 0 ) ) ); ?></p>
+		<p><strong><?php esc_html_e( 'Processed events:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['processedEvents'] ?? 0 ) ) ); ?></p>
+		<?php if ( ! empty( $job['lastError'] ) ) : ?>
+			<p><strong><?php esc_html_e( 'Last error:', 'burrow' ); ?></strong> <?php echo esc_html( (string) $job['lastError'] ); ?></p>
+		<?php endif; ?>
+
+		<?php if ( 'failed' === $status ) : ?>
+			<form method="post" style="display:inline-block;margin-right:8px;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="resume_backfill" />
+				<?php submit_button( __( 'Resume', 'burrow' ), 'secondary', 'submit', false ); ?>
+			</form>
+			<form method="post" style="display:inline-block;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="retry_backfill" />
+				<?php submit_button( __( 'Retry from Start', 'burrow' ), 'secondary', 'submit', false ); ?>
+			</form>
+		<?php elseif ( 'completed' === $status ) : ?>
+			<form method="post" style="display:inline-block;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="retry_backfill" />
+				<?php submit_button( __( 'Run Again', 'burrow' ), 'secondary', 'submit', false ); ?>
+			</form>
+		<?php endif; ?>
+		<?php
+	}
+
+	/**
+	 * Build dynamic backfill support notes from configured integrations.
+	 *
+	 * @param array<string,mixed> $settings Settings.
+	 * @return array<int,string>
+	 */
+	private function build_backfill_support_notes( array $settings ) {
+		$notes    = array();
+		$selected = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
+			? $settings['onboarding']['selected_integrations']
+			: array();
+		$forms_selected = array_intersect( $selected, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ) );
+		if ( ! empty( $forms_selected ) ) {
+			$notes[] = __( 'Backfill includes events for configured forms contracts.', 'burrow' );
+		}
+
+		if ( in_array( 'woocommerce', $selected, true ) ) {
+			$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+			if ( 'track' === $woo_mode ) {
+				$notes[] = __( 'WooCommerce order and line-item events are included in backfill.', 'burrow' );
+			} else {
+				$notes[] = __( 'WooCommerce is selected but tracking is off, so Woo events are skipped in backfill.', 'burrow' );
+			}
+		}
+
+		if ( in_array( 'contact-form-7', $selected, true ) ) {
+			if ( class_exists( '\Flamingo_Inbound_Message' ) ) {
+				$notes[] = __( 'Contact Form 7 historical backfill is enabled via Flamingo submissions.', 'burrow' );
+			} else {
+				$url = admin_url( 'plugin-install.php?s=Flamingo&tab=search&type=term' );
+				$notes[] = sprintf(
+					/* translators: %s Flamingo plugin install URL */
+					__( 'Contact Form 7 does not store submissions by default. Install <a href="%s" target="_blank" rel="noopener noreferrer">Flamingo</a> to include historical CF7 data.', 'burrow' ),
+					esc_url( $url )
+				);
+			}
+		}
+
+		return $notes;
+	}
+
+	private function backfill_window_presets() {
+		return array(
+			'last_7_days'   => __( 'Last 7 days', 'burrow' ),
+			'last_30_days'  => __( 'Last 30 days', 'burrow' ),
+			'last_90_days'  => __( 'Last 90 days', 'burrow' ),
+			'last_365_days' => __( 'Past Year', 'burrow' ),
+			'last_730_days' => __( 'Two Years', 'burrow' ),
+			'all_time'      => __( 'All time', 'burrow' ),
+		);
+	}
+
+	private function resolve_backfill_window_for_preset( $preset ) {
+		$preset = sanitize_key( (string) $preset );
+		$now    = time();
+		$start  = null;
+		switch ( $preset ) {
+			case 'last_7_days':
+				$start = strtotime( '-7 days', $now );
+				break;
+			case 'last_30_days':
+				$start = strtotime( '-30 days', $now );
+				break;
+			case 'last_90_days':
+				$start = strtotime( '-90 days', $now );
+				break;
+			case 'last_365_days':
+				$start = strtotime( '-365 days', $now );
+				break;
+			case 'last_730_days':
+				$start = strtotime( '-730 days', $now );
+				break;
+			case 'all_time':
+				$start = strtotime( '1970-01-01 00:00:00' );
+				break;
+			default:
+				return array(
+					'error' => __( 'Invalid backfill window preset selected.', 'burrow' ),
+				);
+		}
+		if ( false === $start || $start > $now ) {
+			return array(
+				'error' => __( 'Unable to resolve backfill window.', 'burrow' ),
+			);
+		}
+		return array(
+			'preset'      => $preset,
+			'windowStart' => gmdate( 'c', (int) $start ),
+			'windowEnd'   => gmdate( 'c', (int) $now ),
+			'error'       => '',
+		);
+	}
+
+	private function default_wizard_step( array $settings ) {
+		if ( empty( $settings['api_key'] ) ) {
+			return 'connection';
+		}
+		if ( empty( $settings['routing']['projectId'] ) ) {
+			return 'project';
+		}
+		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		if ( empty( $selected ) ) {
+			return 'integrations';
+		}
+		$provider_configured = isset( $settings['onboarding']['provider_configured'] ) && is_array( $settings['onboarding']['provider_configured'] )
+			? $settings['onboarding']['provider_configured']
+			: array();
+		$form_providers = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' );
+		foreach ( $form_providers as $provider ) {
+			if ( in_array( $provider, $selected, true ) && empty( $provider_configured[ $provider ] ) ) {
+				return $provider;
+			}
+		}
+		if ( in_array( 'woocommerce', $selected, true ) && empty( $settings['onboarding']['woocommerce_confirmed'] ) ) {
+			return 'woocommerce';
+		}
+		if ( empty( $settings['contract_sync']['syncedAt'] ) ) {
+			return 'review';
+		}
+		return 'backfill';
+	}
+
+	private function redirect_with_notice( $step, $message ) {
+		$is_error = false !== stripos( $message, 'failed' ) || false !== stripos( $message, 'unable' ) || false !== stripos( $message, 'please' ) || false !== stripos( $message, 'error' );
+		if ( 'operations' === $step ) {
+			$page = 'burrow-operations';
+		} elseif ( 'outbox' === $step ) {
+			$page = 'burrow-outbox';
+		} else {
+			$page = 'burrow-onboarding';
+		}
+		$url      = add_query_arg( array( 'page' => $page, 'step' => $step, 'burrow_notice' => rawurlencode( $message ), 'burrow_error' => $is_error ? '1' : '0' ), admin_url( 'admin.php' ) );
+		wp_safe_redirect( $url );
+		exit;
+	}
+
+	private function render_admin_notice_from_query() {
+		$notice   = isset( $_GET['burrow_notice'] ) ? sanitize_text_field( wp_unslash( $_GET['burrow_notice'] ) ) : '';
+		$is_error = isset( $_GET['burrow_error'] ) && '1' === (string) $_GET['burrow_error'];
+		if ( '' === $notice ) {
+			return;
+		}
+		echo '<div class="notice ' . ( $is_error ? 'notice-error' : 'notice-success' ) . '"><p>' . esc_html( $notice ) . '</p></div>';
+	}
+
+	private function render_burrow_page_header( $title ) {
+		$logo_src = $this->get_brand_logo_src();
+		?>
+		<div style="margin:6px 0 12px 0;">
+			<img src="<?php echo esc_attr( $logo_src ); ?>" alt="Burrow" style="max-width:220px;height:auto;display:block;margin-bottom:8px;" />
+			<h1 style="margin:0;"><?php echo esc_html( (string) $title ); ?></h1>
+		</div>
+		<?php
+	}
+
+	private function get_brand_logo_src() {
+		$paths = array(
+			BURROW_PLUGIN_DIR . 'admin/images/burrow.svg',
+			BURROW_PLUGIN_DIR . 'admin/images/burrow-icon.svg',
+		);
+		foreach ( $paths as $path ) {
+			if ( ! file_exists( $path ) ) {
+				continue;
+			}
+			$contents = file_get_contents( $path );
+			if ( false === $contents || '' === trim( (string) $contents ) ) {
+				continue;
+			}
+			return 'data:image/svg+xml;base64,' . base64_encode( (string) $contents );
+		}
+		return $this->embedded_burrow_logo_data_uri();
+	}
+
+	private function embedded_burrow_logo_data_uri() {
+		$svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><rect width="240" height="60" fill="none"/><text x="8" y="40" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#0b6ea8">Burrow</text></svg>';
+		return 'data:image/svg+xml;base64,' . base64_encode( $svg );
+	}
+
+	private function render_status_badge_styles() {
+		?>
+		<style>
+			.burrow-status-badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 3px 10px;
+				border-radius: 999px;
+				font-size: 12px;
+				font-weight: 600;
+				line-height: 1.5;
+				margin-right: 6px;
+				border: 1px solid transparent;
+			}
+			.burrow-status-pending { background: #fff7ed; color: #9a3412; border-color: #fdba74; }
+			.burrow-status-retrying { background: #eff6ff; color: #1d4ed8; border-color: #93c5fd; }
+			.burrow-status-failed { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
+			.burrow-status-sent,
+			.burrow-status-success { background: #ecfdf5; color: #047857; border-color: #86efac; }
+			.burrow-status-unknown { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
+		</style>
+		<?php
+	}
+
+	private function render_status_badge( $status, $count = null ) {
+		$status = sanitize_key( (string) $status );
+		$class  = in_array( $status, array( 'pending', 'retrying', 'failed', 'sent', 'success' ), true ) ? $status : 'unknown';
+		$label  = ucfirst( str_replace( '_', ' ', $status ) );
+		if ( '' === $label ) {
+			$label = __( 'Unknown', 'burrow' );
+		}
+		$text = null === $count ? $label : sprintf( '%s: %d', $label, (int) $count );
+		return '<span class="burrow-status-badge burrow-status-' . esc_attr( $class ) . '">' . esc_html( $text ) . '</span>';
+	}
+
+	private function build_discover_payload() {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		$plugins = get_plugins();
+		return array(
+			'platform'      => 'wordpress',
+			'pluginVersion' => BURROW_VERSION,
+			'site'          => array( 'url' => site_url(), 'cmsVersion' => get_bloginfo( 'version' ) ),
+			'capabilities'  => array( 'forms' => array_values( $this->detect_forms_capabilities() ), 'ecommerce' => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(), 'system' => true ),
+			'plugins'       => array_keys( $plugins ),
+		);
+	}
+
+	private function extract_project_candidates( array $body ) {
+		$list = array();
+		foreach ( array( 'projects', 'projectMatches', 'matches' ) as $key ) {
+			if ( isset( $body[ $key ] ) && is_array( $body[ $key ] ) ) {
+				$list = $body[ $key ];
+				break;
+			}
+		}
+		$items = array();
+		foreach ( $list as $row ) {
+			if ( ! is_array( $row ) ) {
+				continue;
+			}
+			$client  = isset( $row['client'] ) && is_array( $row['client'] ) ? $row['client'] : $row;
+			$project = isset( $row['project'] ) && is_array( $row['project'] ) ? $row['project'] : $row;
+			$items[] = array(
+				'organizationId' => (string) ( $row['organizationId'] ?? $client['organizationId'] ?? '' ),
+				'clientId'       => (string) ( $row['clientId'] ?? $client['id'] ?? '' ),
+				'projectId'      => (string) ( $row['projectId'] ?? $project['id'] ?? '' ),
+				'clientName'     => (string) ( $client['name'] ?? $row['clientName'] ?? '' ),
+				'projectName'    => (string) ( $project['name'] ?? $row['projectName'] ?? '' ),
+				'siteUrl'        => (string) ( $project['url'] ?? $row['siteUrl'] ?? '' ),
+			);
+		}
+		return $items;
+	}
+
+	private function merge_gravity_contracts( array $settings, $gravity ) {
+		$gravity   = is_array( $gravity ) ? $gravity : array();
+		$forms     = isset( $gravity['forms'] ) && is_array( $gravity['forms'] ) ? $gravity['forms'] : array();
+		$existing  = (array) ( $settings['forms_contracts'] ?? array() );
+		$contracts = array();
+		foreach ( $existing as $k => $v ) {
+			if ( 0 !== strpos( (string) $k, 'gravity-forms:' ) ) {
+				$contracts[ $k ] = $v;
+			}
+		}
+		foreach ( $forms as $id => $form ) {
+			if ( ! is_array( $form ) ) {
+				continue;
+			}
+			$mode = isset( $form['mode'] ) ? sanitize_key( (string) $form['mode'] ) : 'off';
+			if ( ! in_array( $mode, array( 'off', 'count_only', 'custom_fields' ), true ) ) {
+				$mode = 'off';
+			}
+			if ( 'off' === $mode ) {
+				continue;
+			}
+			$count_only = 'count_only' === $mode;
+			$fields = isset( $form['fields'] ) && is_array( $form['fields'] ) ? $form['fields'] : array();
+			$m      = array();
+			foreach ( $fields as $f ) {
+				if ( ! is_array( $f ) || empty( $f['include'] ) ) {
+					continue;
+				}
+				$m[] = array(
+					'externalFieldId'      => sanitize_text_field( (string) ( $f['externalFieldId'] ?? '' ) ),
+					'sourceLabel'          => sanitize_text_field( (string) ( $f['sourceLabel'] ?? '' ) ),
+					'canonicalKey'         => sanitize_text_field( (string) ( $f['canonicalKey'] ?? '' ) ),
+					'target'               => 'tags' === ( $f['target'] ?? '' ) ? 'tags' : 'properties',
+					'dataType'             => 'string',
+					'reportable'           => 'tags' === ( $f['target'] ?? '' ),
+					'displayLabelOverride' => sanitize_text_field( (string) ( $f['displayLabelOverride'] ?? '' ) ),
+				);
+			}
+			if ( empty( $m ) && 'custom_fields' === $mode ) {
+				// Safety: keep forms only when fields are selected or count-only mode is enabled.
+				continue;
+			}
+			$form_id                = sanitize_text_field( (string) $id );
+			$contract_key           = 'gravity-forms:' . $form_id;
+			$current_contract       = isset( $existing[ $contract_key ] ) && is_array( $existing[ $contract_key ] ) ? $existing[ $contract_key ] : array();
+			$icon_override          = isset( $form['icon'] ) ? sanitize_text_field( (string) $form['icon'] ) : (string) ( $current_contract['icon'] ?? '' );
+			$contracts[ 'gravity-forms:' . $form_id ] = array(
+				'provider'       => 'gravity-forms',
+				'externalFormId' => $form_id,
+				'formHandle'     => sanitize_title( (string) ( $form['formName'] ?? '' ) ),
+				'formName'       => sanitize_text_field( (string) ( $form['formName'] ?? '' ) ),
+				'enabled'        => true,
+				'countOnly'      => $count_only,
+				'mode'           => $mode,
+				'fieldMappings'  => $m,
+				'icon'           => '' !== trim( $icon_override ) ? $icon_override : null,
+			);
+		}
+		return $contracts;
+	}
+
+	private function merge_simple_provider_contracts( array $settings, $provider, $provider_forms ) {
+		$provider      = sanitize_key( (string) $provider );
+		$provider_forms = is_array( $provider_forms ) ? $provider_forms : array();
+		$forms         = isset( $provider_forms['forms'] ) && is_array( $provider_forms['forms'] ) ? $provider_forms['forms'] : array();
+		$existing      = (array) ( $settings['forms_contracts'] ?? array() );
+		$contracts     = array();
+		$prefix        = $provider . ':';
+		foreach ( $existing as $key => $value ) {
+			if ( 0 !== strpos( (string) $key, $prefix ) ) {
+				$contracts[ $key ] = $value;
+			}
+		}
+		foreach ( $forms as $id => $form ) {
+			if ( ! is_array( $form ) ) {
+				continue;
+			}
+			$mode = isset( $form['mode'] ) ? sanitize_key( (string) $form['mode'] ) : 'off';
+			$allowed_modes = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true )
+				? array( 'off', 'count_only', 'custom_fields' )
+				: array( 'off', 'count_only' );
+			if ( ! in_array( $mode, $allowed_modes, true ) ) {
+				$mode = 'off';
+			}
+			if ( 'off' === $mode ) {
+				continue;
+			}
+			$mappings = array();
+			if ( 'custom_fields' === $mode ) {
+				$fields = isset( $form['fields'] ) && is_array( $form['fields'] ) ? $form['fields'] : array();
+				foreach ( $fields as $field ) {
+					if ( ! is_array( $field ) || empty( $field['include'] ) ) {
+						continue;
+					}
+					$mappings[] = array(
+						'externalFieldId'      => sanitize_text_field( (string) ( $field['externalFieldId'] ?? '' ) ),
+						'sourceLabel'          => sanitize_text_field( (string) ( $field['sourceLabel'] ?? '' ) ),
+						'canonicalKey'         => sanitize_text_field( (string) ( $field['canonicalKey'] ?? '' ) ),
+						'target'               => 'tags' === ( $field['target'] ?? '' ) ? 'tags' : 'properties',
+						'dataType'             => sanitize_text_field( (string) ( $field['dataType'] ?? 'string' ) ),
+						'reportable'           => 'tags' === ( $field['target'] ?? '' ),
+						'displayLabelOverride' => sanitize_text_field( (string) ( $field['sourceLabel'] ?? '' ) ),
+					);
+				}
+				if ( empty( $mappings ) ) {
+					continue;
+				}
+			}
+			$form_id = sanitize_text_field( (string) $id );
+			$contract_key = $prefix . $form_id;
+			$current_contract = isset( $existing[ $contract_key ] ) && is_array( $existing[ $contract_key ] ) ? $existing[ $contract_key ] : array();
+			$icon_override = isset( $form['icon'] ) ? sanitize_text_field( (string) $form['icon'] ) : (string) ( $current_contract['icon'] ?? '' );
+			$contracts[ $prefix . $form_id ] = array(
+				'provider'       => $provider,
+				'externalFormId' => $form_id,
+				'formHandle'     => sanitize_title( (string) ( $form['formName'] ?? '' ) ),
+				'formName'       => sanitize_text_field( (string) ( $form['formName'] ?? '' ) ),
+				'enabled'        => true,
+				'countOnly'      => 'custom_fields' !== $mode,
+				'mode'           => $mode,
+				'fieldMappings'  => $mappings,
+				'icon'           => '' !== trim( $icon_override ) ? $icon_override : null,
+			);
+		}
+		return $contracts;
+	}
+
+	private function build_forms_contract_payload( array $settings ) {
+		return array(
+			'platform'      => 'wordpress',
+			'pluginVersion' => BURROW_VERSION,
+			'site'          => array( 'url' => site_url(), 'cmsVersion' => get_bloginfo( 'version' ) ),
+			'routing'       => array(
+				'organizationId' => $settings['routing']['organizationId'],
+				'clientId'       => $settings['routing']['clientId'],
+				'projectId'      => $settings['routing']['projectId'],
+				'projectSourceId'=> $settings['routing']['sourceIds']['forms'] ?? '',
+			),
+			'formsContracts' => array_values( (array) $settings['forms_contracts'] ),
+		);
+	}
+
+	private function persist_link_response( array $response ) {
+		if ( empty( $response['ok'] ) ) {
+			return 'Link failed: ' . ( $response['error'] ?? 'Unknown error' );
+		}
+		$body     = (array) ( $response['body'] ?? array() );
+		$settings = $this->options_repo->get_settings();
+		$candidates = array( $body );
+		if ( isset( $body['routing'] ) && is_array( $body['routing'] ) ) {
+			$candidates[] = $body['routing'];
+		}
+		if ( isset( $body['selection'] ) && is_array( $body['selection'] ) ) {
+			$candidates[] = $body['selection'];
+		}
+		if ( isset( $body['project'] ) && is_array( $body['project'] ) ) {
+			$candidates[] = $body['project'];
+		}
+		foreach ( $candidates as $candidate ) {
+			foreach ( array( 'organizationId', 'clientId', 'projectId' ) as $k ) {
+				if ( isset( $candidate[ $k ] ) && '' !== (string) $candidate[ $k ] ) {
+					$settings['routing'][ $k ] = (string) $candidate[ $k ];
+				}
+			}
+			if ( isset( $candidate['projectSourceId'] ) && '' !== (string) $candidate['projectSourceId'] ) {
+				$settings['routing']['projectSourceId'] = (string) $candidate['projectSourceId'];
+			}
+			if ( ! empty( $candidate['sourceIds'] ) && is_array( $candidate['sourceIds'] ) ) {
+				$settings['routing']['sourceIds'] = array_merge( $settings['routing']['sourceIds'], $candidate['sourceIds'] );
+			}
+		}
+		$this->options_repo->save_settings( $settings );
+		if ( empty( $settings['routing']['projectId'] ) ) {
+			return __( 'Project linked response received, but projectId was missing. Please reselect and link the project.', 'burrow' );
+		}
+		return __( 'Project linked successfully.', 'burrow' );
+	}
+
+	private function validate_routing_before_contract_sync( array $settings ) {
+		$routing = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
+		if ( empty( $routing['projectId'] ) ) {
+			return __( 'Project is not linked yet. Please complete Step 2: Select Project before syncing contracts.', 'burrow' );
+		}
+		return '';
+	}
+
+	private function persist_contract_response( array $response ) {
+		if ( empty( $response['ok'] ) ) {
+			return 'Contract sync failed: ' . ( $response['error'] ?? 'Unknown error' );
+		}
+		$body = (array) ( $response['body'] ?? array() );
+		$s    = $this->options_repo->get_settings();
+		$s['contract_sync'] = array( 'version' => (string) ( $body['version'] ?? '' ), 'hash' => (string) ( $body['hash'] ?? '' ), 'syncedAt' => gmdate( 'c' ) );
+		$this->options_repo->save_settings( $s );
+		return __( 'Contracts synced to Burrow.', 'burrow' );
+	}
+
+	private function detect_forms_capabilities() {
+		$out = array();
+		if ( class_exists( 'GFForms' ) ) {
+			$out[] = 'gravity-forms';
+		}
+		if ( class_exists( 'Ninja_Forms' ) ) {
+			$out[] = 'ninja-forms';
+		}
+		if ( class_exists( 'WPCF7' ) ) {
+			$out[] = 'contact-form-7';
+		}
+		if ( defined( 'FLUENTFORM' ) || class_exists( '\FluentForm\App' ) ) {
+			$out[] = 'fluent-forms';
+		}
+		return $out;
+	}
+
+	private function detected_integrations() {
+		$list = $this->detect_forms_capabilities();
+		if ( class_exists( 'WooCommerce' ) ) {
+			$list[] = 'woocommerce';
+		}
+		return $list;
+	}
+
+	private function integration_labels() {
+		return array(
+			'gravity-forms'  => 'Gravity Forms',
+			'ninja-forms'    => 'Ninja Forms',
+			'contact-form-7' => 'Contact Form 7',
+			'fluent-forms'   => 'Fluent Forms',
+			'woocommerce'    => 'WooCommerce',
+		);
+	}
+
+	private function get_integration_icon_markup( $integration ) {
+		$fallback_class = $this->get_integration_fallback_icon_class( $integration );
+		$menu_icons = array(
+			'gravity-forms'  => array( 'gf_edit_forms', 'gravityforms' ),
+			'ninja-forms'    => array( 'ninja-forms', 'nf-dashboard' ),
+			'contact-form-7' => array( 'wpcf7', 'contact' ),
+			'fluent-forms'   => array( 'fluent_forms', 'fluent_forms_settings' ),
+			'woocommerce'    => array( 'woocommerce' ),
+		);
+
+		$menu_icon = $this->resolve_menu_icon_value( $menu_icons[ $integration ] ?? array() );
+		if ( is_string( $menu_icon ) && 0 === strpos( $menu_icon, 'dashicons-' ) ) {
+			return '<span class="dashicons ' . esc_attr( $menu_icon ) . '" aria-hidden="true"></span>';
+		}
+		if ( is_string( $menu_icon ) && 0 === strpos( $menu_icon, 'data:image' ) ) {
+			$valid_data_uri = 1 === preg_match( '/^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9\/+=]+$/', $menu_icon );
+			if ( $valid_data_uri ) {
+				return '<img class="burrow-menu-glyph" src="' . esc_attr( $menu_icon ) . '" alt="" aria-hidden="true" />';
+			}
+		}
+		return '<span class="dashicons ' . esc_attr( $fallback_class ) . '" aria-hidden="true"></span>';
+	}
+
+	private function get_integration_fallback_icon_class( $integration ) {
+		$fallback = array(
+			'gravity-forms'  => 'dashicons-feedback',
+			'ninja-forms'    => 'dashicons-email-alt2',
+			'contact-form-7' => 'dashicons-email',
+			'fluent-forms'   => 'dashicons-editor-table',
+			'woocommerce'    => 'dashicons-cart',
+		);
+		return isset( $fallback[ $integration ] ) ? $fallback[ $integration ] : 'dashicons-admin-plugins';
+	}
+
+	private function resolve_menu_icon_value( array $candidate_slugs ) {
+		global $menu;
+		if ( empty( $menu ) || empty( $candidate_slugs ) ) {
+			return null;
+		}
+		foreach ( $menu as $row ) {
+			if ( ! is_array( $row ) || empty( $row[2] ) || empty( $row[6] ) ) {
+				continue;
+			}
+			$slug = (string) $row[2];
+			foreach ( $candidate_slugs as $candidate ) {
+				$candidate = (string) $candidate;
+				if ( $slug === $candidate || 0 === strpos( $slug, $candidate ) ) {
+					return (string) $row[6];
+				}
+			}
+		}
+		return null;
+	}
+
+	private function build_wizard_steps( array $settings ) {
+		$steps = array( 'connection' => 'Connection', 'project' => 'Project', 'integrations' => 'Integrations' );
+		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$form_provider_labels = array(
+			'gravity-forms'  => 'Gravity Forms',
+			'contact-form-7' => 'Contact Form 7',
+			'ninja-forms'    => 'Ninja Forms',
+			'fluent-forms'   => 'Fluent Forms',
+		);
+		foreach ( array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ) as $provider_key ) {
+			if ( in_array( $provider_key, $selected, true ) ) {
+				$steps[ $provider_key ] = $form_provider_labels[ $provider_key ];
+			}
+		}
+		if ( in_array( 'woocommerce', $selected, true ) ) {
+			$steps['woocommerce'] = 'WooCommerce';
+		}
+		$steps['review'] = 'Review';
+		$steps['backfill'] = 'Backfill';
+		return $steps;
+	}
+
+	private function next_config_step( array $settings, $from ) {
+		$keys = array_keys( $this->build_wizard_steps( $settings ) );
+		$idx  = array_search( $from, $keys, true );
+		if ( false === $idx ) {
+			return 'review';
+		}
+		return isset( $keys[ $idx + 1 ] ) ? $keys[ $idx + 1 ] : 'review';
+	}
+
+	private function previous_step( array $settings, $from ) {
+		$keys = array_keys( $this->build_wizard_steps( $settings ) );
+		$idx  = array_search( $from, $keys, true );
+		if ( false === $idx || 0 === $idx ) {
+			return '';
+		}
+		return (string) $keys[ $idx - 1 ];
+	}
+
+	private function get_enabled_contract_keys( array $contracts ) {
+		$keys = array();
+		foreach ( $contracts as $key => $contract ) {
+			if ( is_array( $contract ) && ! empty( $contract['enabled'] ) ) {
+				$keys[] = (string) $key;
+			}
+		}
+		return $keys;
+	}
+
+	/**
+	 * Build the current list of sources included in backfill.
+	 *
+	 * @param array<string,mixed> $settings Plugin settings.
+	 * @return string[]
+	 */
+	private function build_backfill_active_keys( array $settings ) {
+		$keys = $this->get_enabled_contract_keys( (array) ( $settings['forms_contracts'] ?? array() ) );
+		$selected_integrations = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
+			? $settings['onboarding']['selected_integrations']
+			: array();
+		$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+		$woo_enabled = 'track' === $woo_mode || in_array( 'woocommerce', $selected_integrations, true );
+		if ( $woo_enabled ) {
+			$keys[] = 'woocommerce:orders';
+		}
+		return array_values( array_unique( $keys ) );
+	}
+
+	private function reset_onboarding_state( $state ) {
+		$state = is_array( $state ) ? $state : array();
+		$state['selected_integrations'] = array();
+		$state['gravity_configured']    = false;
+		$state['woocommerce_confirmed'] = false;
+		$state['woocommerce_mode']      = 'track';
+		$state['provider_configured']   = array();
+		return $state;
+	}
+
+	private function render_step_heading( $step, $title ) {
+		$icon = $this->get_step_icon_markup( $step );
+		echo '<h2 class="burrow-step-title">';
+		echo $icon; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		echo '<span>' . esc_html( (string) $title ) . '</span>';
+		echo '</h2>';
+	}
+
+	private function get_step_icon_markup( $step ) {
+		$step = sanitize_key( (string) $step );
+		$provider_steps = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' );
+		if ( in_array( $step, $provider_steps, true ) ) {
+			return $this->get_integration_icon_markup( $step );
+		}
+		$dashicons = array(
+			'connection'   => 'dashicons-admin-links',
+			'project'      => 'dashicons-portfolio',
+			'integrations' => 'dashicons-admin-plugins',
+			'review'       => 'dashicons-yes-alt',
+			'backfill'     => 'dashicons-backup',
+		);
+		$klass = isset( $dashicons[ $step ] ) ? $dashicons[ $step ] : 'dashicons-admin-generic';
+		return '<span class="dashicons burrow-integration-icon ' . esc_attr( $klass ) . '" aria-hidden="true"></span>';
+	}
+
+	private function list_gravity_forms() {
+		if ( ! class_exists( 'GFAPI' ) || ! method_exists( 'GFAPI', 'get_forms' ) ) {
+			return array();
+		}
+		$forms = \GFAPI::get_forms();
+		$out   = array();
+		foreach ( (array) $forms as $form ) {
+			if ( ! is_array( $form ) ) {
+				continue;
+			}
+			if ( isset( $form['is_active'] ) && ! $form['is_active'] ) {
+				continue;
+			}
+			$out[] = $form;
+		}
+		return $out;
+	}
+
+	private function list_contact_form_7_forms() {
+		if ( ! class_exists( '\WPCF7_ContactForm' ) ) {
+			return array();
+		}
+		$forms = array();
+		if ( method_exists( '\WPCF7_ContactForm', 'find' ) ) {
+			$forms = \WPCF7_ContactForm::find();
+		} elseif ( function_exists( 'wpcf7_contact_forms' ) ) {
+			$forms = wpcf7_contact_forms();
+		}
+		$out = array();
+		foreach ( (array) $forms as $form ) {
+			$id = '';
+			$title = '';
+			if ( is_object( $form ) ) {
+				$id = method_exists( $form, 'id' ) ? (string) $form->id() : (string) ( $form->ID ?? '' );
+				$title = method_exists( $form, 'title' ) ? (string) $form->title() : (string) ( $form->post_title ?? '' );
+			} elseif ( is_array( $form ) ) {
+				$id = (string) ( $form['id'] ?? $form['ID'] ?? '' );
+				$title = (string) ( $form['title'] ?? $form['post_title'] ?? '' );
+			}
+			if ( '' === $id ) {
+				continue;
+			}
+			$out[] = array(
+				'id' => $id,
+				'title' => '' !== $title ? $title : sprintf( 'Form %s', $id ),
+			);
+		}
+		return $out;
+	}
+
+	private function list_contact_form_7_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 || ! class_exists( '\WPCF7_ContactForm' ) ) {
+			return array();
+		}
+
+		$form = null;
+		if ( method_exists( '\WPCF7_ContactForm', 'get_instance' ) ) {
+			$form = \WPCF7_ContactForm::get_instance( $form_id );
+		}
+		if ( ! $form ) {
+			return array();
+		}
+
+		$fields = array();
+		if ( is_object( $form ) && method_exists( $form, 'scan_form_tags' ) ) {
+			$tags = $form->scan_form_tags();
+			foreach ( (array) $tags as $tag ) {
+				if ( ! is_object( $tag ) ) {
+					continue;
+				}
+				$name = isset( $tag->name ) ? (string) $tag->name : '';
+				if ( '' === $name ) {
+					continue;
+				}
+				$type = isset( $tag->basetype ) ? (string) $tag->basetype : ( isset( $tag->type ) ? (string) $tag->type : 'text' );
+				$fields[ $name ] = array(
+					'name' => $name,
+					'type' => $type,
+				);
+			}
+		}
+
+		if ( empty( $fields ) ) {
+			$template = '';
+			if ( is_object( $form ) && method_exists( $form, 'prop' ) ) {
+				$template = (string) $form->prop( 'form' );
+			} elseif ( is_object( $form ) && isset( $form->properties['form'] ) ) {
+				$template = (string) $form->properties['form'];
+			}
+			if ( '' !== $template ) {
+				preg_match_all( '/\[([a-zA-Z0-9_-]+\*?)\s+([a-zA-Z0-9_-]+)/', $template, $matches, PREG_SET_ORDER );
+				foreach ( (array) $matches as $match ) {
+					$type = isset( $match[1] ) ? rtrim( (string) $match[1], '*' ) : 'text';
+					$name = isset( $match[2] ) ? (string) $match[2] : '';
+					if ( '' === $name ) {
+						continue;
+					}
+					$fields[ $name ] = array(
+						'name' => $name,
+						'type' => $type,
+					);
+				}
+			}
+		}
+
+		return array_values( $fields );
+	}
+
+	private function list_ninja_forms() {
+		if ( ! function_exists( 'Ninja_Forms' ) ) {
+			return array();
+		}
+		$forms = array();
+		$nf = Ninja_Forms();
+		if ( is_object( $nf ) && method_exists( $nf, 'form' ) ) {
+			$form_repo = $nf->form();
+			if ( is_object( $form_repo ) && method_exists( $form_repo, 'get_forms' ) ) {
+				$forms = $form_repo->get_forms();
+			}
+		}
+		$out = array();
+		foreach ( (array) $forms as $form ) {
+			$id = '';
+			$title = '';
+			if ( is_object( $form ) ) {
+				$id = method_exists( $form, 'get_id' ) ? (string) $form->get_id() : (string) ( $form->id ?? '' );
+				$title = method_exists( $form, 'get_setting' ) ? (string) $form->get_setting( 'title' ) : (string) ( $form->title ?? '' );
+			} elseif ( is_array( $form ) ) {
+				$id = (string) ( $form['id'] ?? '' );
+				$title = (string) ( $form['title'] ?? '' );
+			}
+			if ( '' === $id ) {
+				continue;
+			}
+			$out[] = array(
+				'id' => $id,
+				'title' => '' !== $title ? $title : sprintf( 'Form %s', $id ),
+			);
+		}
+		return $out;
+	}
+
+	private function list_ninja_form_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 ) {
+			return array();
+		}
+
+		$out = array();
+		if ( function_exists( 'Ninja_Forms' ) ) {
+			$nf = Ninja_Forms();
+			if ( is_object( $nf ) && method_exists( $nf, 'form' ) ) {
+				$form = $nf->form( $form_id );
+				if ( is_object( $form ) && method_exists( $form, 'get_fields' ) ) {
+					$fields = $form->get_fields();
+					foreach ( (array) $fields as $field ) {
+						if ( ! is_object( $field ) ) {
+							continue;
+						}
+						$id = method_exists( $field, 'get_id' ) ? (string) $field->get_id() : (string) ( $field->id ?? '' );
+						if ( '' === $id ) {
+							continue;
+						}
+						$label = method_exists( $field, 'get_setting' ) ? (string) $field->get_setting( 'label' ) : '';
+						$key   = method_exists( $field, 'get_setting' ) ? (string) $field->get_setting( 'key' ) : '';
+						$type  = method_exists( $field, 'get_setting' ) ? (string) $field->get_setting( 'type' ) : 'text';
+						$out[] = array(
+							'id'   => $id,
+							'name' => '' !== $label ? $label : ( '' !== $key ? $key : 'Field ' . $id ),
+							'type' => '' !== $type ? $type : 'text',
+						);
+					}
+				}
+			}
+		}
+
+		if ( ! empty( $out ) ) {
+			return $out;
+		}
+
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return array();
+		}
+		$table = $wpdb->prefix . 'nf3_fields';
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		if ( $table !== $exists ) {
+			return array();
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, label, type, `key` FROM {$table} WHERE parent_id = %d ORDER BY id ASC", $form_id ), ARRAY_A );
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+		foreach ( $rows as $row ) {
+			$id = isset( $row['id'] ) ? (string) $row['id'] : '';
+			if ( '' === $id ) {
+				continue;
+			}
+			$label = isset( $row['label'] ) ? (string) $row['label'] : '';
+			$key   = isset( $row['key'] ) ? (string) $row['key'] : '';
+			$type  = isset( $row['type'] ) ? (string) $row['type'] : 'text';
+			$out[] = array(
+				'id'   => $id,
+				'name' => '' !== $label ? $label : ( '' !== $key ? $key : 'Field ' . $id ),
+				'type' => '' !== $type ? $type : 'text',
+			);
+		}
+		return $out;
+	}
+
+	private function list_fluent_forms() {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return array();
+		}
+		$table = $wpdb->prefix . 'fluentform_forms';
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		if ( $table !== $exists ) {
+			return array();
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results( "SELECT id, title FROM {$table} WHERE status = 'published' ORDER BY id DESC", ARRAY_A );
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $rows as $row ) {
+			$id = isset( $row['id'] ) ? (string) $row['id'] : '';
+			if ( '' === $id ) {
+				continue;
+			}
+			$out[] = array(
+				'id' => $id,
+				'title' => (string) ( $row['title'] ?? sprintf( 'Form %s', $id ) ),
+			);
+		}
+		return $out;
+	}
+
+	private function list_fluent_form_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 ) {
+			return array();
+		}
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return array();
+		}
+		$table = $wpdb->prefix . 'fluentform_forms';
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		if ( $table !== $exists ) {
+			return array();
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT form_fields FROM {$table} WHERE id = %d LIMIT 1", $form_id ), ARRAY_A );
+		if ( ! is_array( $row ) || empty( $row['form_fields'] ) ) {
+			return array();
+		}
+		$schema = json_decode( (string) $row['form_fields'], true );
+		if ( ! is_array( $schema ) ) {
+			return array();
+		}
+		$fields = array();
+		$this->collect_fluent_fields_from_schema( $schema, $fields );
+		return array_values( $fields );
+	}
+
+	private function collect_fluent_fields_from_schema( $node, array &$fields ) {
+		if ( ! is_array( $node ) ) {
+			return;
+		}
+
+		$name = '';
+		$type = '';
+		if ( isset( $node['attributes'] ) && is_array( $node['attributes'] ) ) {
+			$name = isset( $node['attributes']['name'] ) ? (string) $node['attributes']['name'] : '';
+			$type = isset( $node['attributes']['type'] ) ? (string) $node['attributes']['type'] : '';
+		}
+		if ( '' === $name && isset( $node['name'] ) && is_string( $node['name'] ) ) {
+			$name = (string) $node['name'];
+		}
+		if ( '' === $type && isset( $node['element'] ) ) {
+			$type = (string) $node['element'];
+		}
+		$label = isset( $node['settings']['label'] ) ? (string) $node['settings']['label'] : $name;
+
+		if ( '' !== $name ) {
+			$fields[ $name ] = array(
+				'id'   => $name,
+				'name' => '' !== $label ? $label : $name,
+				'type' => '' !== $type ? $type : 'text',
+			);
+		}
+
+		foreach ( $node as $child ) {
+			if ( is_array( $child ) ) {
+				$this->collect_fluent_fields_from_schema( $child, $fields );
+			}
+		}
+	}
+
+	private function is_suggested_field_type( $type ) {
+		return in_array( $type, array( 'hidden', 'select', 'checkbox', 'radio' ), true );
+	}
+
+	private function label_to_canonical_key( $label ) {
+		$label = preg_replace( '/[^a-zA-Z0-9 ]/', ' ', (string) $label );
+		$parts = preg_split( '/\s+/', trim( (string) $label ) );
+		if ( empty( $parts ) ) {
+			return 'fieldValue';
+		}
+		$first = strtolower( (string) array_shift( $parts ) );
+		$rest  = '';
+		foreach ( $parts as $p ) {
+			$rest .= ucfirst( strtolower( (string) $p ) );
+		}
+		return $first . $rest;
+	}
+
+	private function get_menu_icon_data_uri() {
+		$path = BURROW_PLUGIN_DIR . 'admin/images/burrow-icon.svg';
+		if ( ! file_exists( $path ) ) {
+			return $this->embedded_burrow_logo_data_uri();
+		}
+		$contents = file_get_contents( $path );
+		if ( false === $contents || '' === trim( (string) $contents ) ) {
+			return $this->embedded_burrow_logo_data_uri();
+		}
+		return 'data:image/svg+xml;base64,' . base64_encode( (string) $contents );
 	}
 }

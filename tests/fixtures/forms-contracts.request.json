@@ -1,0 +1,32 @@
+{
+  "platform": "wordpress",
+  "pluginVersion": "1.0.0",
+  "site": {
+    "url": "https://example.com",
+    "cmsVersion": "6.8.1"
+  },
+  "routing": {
+    "clientId": "cli_123",
+    "projectId": "prj_123",
+    "projectSourceId": "psrc_forms_456"
+  },
+  "formsContracts": [
+    {
+      "provider": "gravity-forms",
+      "externalFormId": "7",
+      "formHandle": "estimate-request",
+      "formName": "Estimate Request",
+      "enabled": true,
+      "fieldMappings": [
+        {
+          "externalFieldId": "3",
+          "sourceLabel": "Service Needed",
+          "canonicalKey": "serviceInterest",
+          "target": "tags",
+          "dataType": "string",
+          "reportable": true
+        }
+      ]
+    }
+  ]
+}

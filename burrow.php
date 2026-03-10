@@ -31,6 +31,7 @@ if ( ! defined( 'WPINC' ) ) {
  * Current plugin version.
  */
 define( 'BURROW_VERSION', '1.0.0' );
+define( 'BURROW_PLUGIN_FILE', __FILE__ );
 
 /**
  * Plugin base path.
@@ -41,6 +42,10 @@ define( 'BURROW_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
  * Plugin base URL.
  */
 define( 'BURROW_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+
+if ( file_exists( BURROW_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
+	require BURROW_PLUGIN_DIR . 'vendor/autoload.php';
+}
 
 /**
  * The code that runs during plugin activation.
@@ -65,6 +70,7 @@ register_deactivation_hook( __FILE__, 'deactivate_burrow' );
  * The core plugin class that is used to define internationalization,
  * admin-specific hooks, and public-facing site hooks.
  */
+require BURROW_PLUGIN_DIR . 'includes/class-burrow-autoloader.php';
 require BURROW_PLUGIN_DIR . 'includes/class-burrow.php';
 
 /**

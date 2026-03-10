@@ -15,6 +15,9 @@ class Burrow_Deactivator {
 	 * Clears any scheduled cron events added by the plugin.
 	 */
 	public static function deactivate() {
-		wp_clear_scheduled_hook( 'burrow_sync_events' );
+		wp_clear_scheduled_hook( 'burrow_outbox_worker' );
+		wp_clear_scheduled_hook( 'burrow_system_heartbeat' );
+		wp_clear_scheduled_hook( 'burrow_system_stack_snapshot' );
+		wp_clear_scheduled_hook( 'burrow_outbox_cleanup' );
 	}
 }

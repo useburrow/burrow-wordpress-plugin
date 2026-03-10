@@ -10,10 +10,23 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 	exit;
 }
 
+// Respect uninstall cleanup preference.
+$settings = get_option( 'burrow_settings', array() );
+$cleanup  = isset( $settings['cleanup_on_uninstall'] ) ? (bool) $settings['cleanup_on_uninstall'] : false;
+
+if ( $cleanup ) {
+	global $wpdb;
+	$table_name = $wpdb->prefix . 'burrow_outbox';
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$wpdb->query( "DROP TABLE IF EXISTS {$table_name}" );
+}
+
 // Remove plugin options from the database.
-delete_option( 'burrow_api_key' );
 delete_option( 'burrow_settings' );
 delete_option( 'burrow_version' );
 
 // Remove any scheduled events.
-wp_clear_scheduled_hook( 'burrow_sync_events' );
+wp_clear_scheduled_hook( 'burrow_outbox_worker' );
+wp_clear_scheduled_hook( 'burrow_system_heartbeat' );
+wp_clear_scheduled_hook( 'burrow_system_stack_snapshot' );
+wp_clear_scheduled_hook( 'burrow_outbox_cleanup' );
