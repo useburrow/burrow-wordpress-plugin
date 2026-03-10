@@ -95,6 +95,18 @@ composer install
 composer test
 ```
 
+### Build release zip (includes `vendor`)
+
+`vendor` is ignored in source control. To produce a WordPress-installable artifact with dependencies included:
+
+```bash
+./scripts/build-release.sh
+```
+
+This writes:
+
+- `dist/burrow-wordpress-plugin.zip`
+
 ### Icon keys
 
 - Event icons use Lucide icon key strings.
