@@ -49,11 +49,18 @@ class BurrowApiClient {
 	private $sdk_transport_instance;
 
 	public function __construct( $base_url, $api_key, $timeout = 5, array $ingestion_key = array(), array $client_state = array() ) {
-		$this->base_url = rtrim( (string) $base_url, '/' );
-		$this->api_key  = (string) $api_key;
-		$this->timeout  = max( 1, (int) $timeout );
+		$this->base_url      = rtrim( (string) $base_url, '/' );
+		$this->api_key       = (string) $api_key;
+		$this->timeout       = max( 1, (int) $timeout );
 		$this->ingestion_key = $ingestion_key;
 		$this->client_state  = $client_state;
+
+		if ( empty( $this->client_state['ingestionKey'] ) && ! empty( $ingestion_key['key'] ) ) {
+			$this->client_state['ingestionKey'] = trim( (string) $ingestion_key['key'] );
+		}
+		if ( empty( $this->client_state['projectId'] ) && ! empty( $ingestion_key['projectId'] ) ) {
+			$this->client_state['projectId'] = trim( (string) $ingestion_key['projectId'] );
+		}
 	}
 
 	/**
@@ -277,6 +284,20 @@ class BurrowApiClient {
 	 */
 	public function get_dispatch_client() {
 		return $this->dispatch_sdk_client();
+	}
+
+	/**
+	 * @return array<string,mixed>
+	 */
+	public function get_sdk_state_array() {
+		return $this->sdk_client()->getState()->toArray();
+	}
+
+	/**
+	 * @return \Burrow\Sdk\Contracts\LinkedProjectDeepLink|null
+	 */
+	public function get_linked_deep_link() {
+		return $this->sdk_client()->getLinkedProjectDeepLink();
 	}
 
 	/**
@@ -564,10 +585,8 @@ class BurrowApiClient {
 	private function assert_event_name_contract( array $event ) {
 		$channel = isset( $event['channel'] ) ? trim( (string) $event['channel'] ) : '';
 		$name    = isset( $event['event'] ) ? trim( (string) $event['event'] ) : '';
-		if ( 'system' === $channel && '' !== $name && 0 === strpos( $name, 'system.' ) ) {
-			throw new \InvalidArgumentException(
-				sprintf( 'System event name must be unprefixed (received "%s").', $name )
-			);
+		if ( '' !== $channel && '' !== $name ) {
+			\Burrow\Sdk\Events\CanonicalEventName::normalize( $channel, $name, true );
 		}
 	}
 
@@ -579,17 +598,7 @@ class BurrowApiClient {
 		$state = is_array( $this->client_state ) ? $this->client_state : array();
 		if ( ! $include_ingestion_key ) {
 			$state['ingestionKey'] = '';
-		} else {
-			$state_ingestion_key = isset( $state['ingestionKey'] ) ? trim( (string) $state['ingestionKey'] ) : '';
-			if ( '' === $state_ingestion_key && ! empty( $this->ingestion_key['key'] ) ) {
-				$state['ingestionKey'] = trim( (string) $this->ingestion_key['key'] );
-			}
 		}
-		$state_project_id = isset( $state['projectId'] ) ? trim( (string) $state['projectId'] ) : '';
-		if ( '' === $state_project_id && ! empty( $this->ingestion_key['projectId'] ) ) {
-			$state['projectId'] = trim( (string) $this->ingestion_key['projectId'] );
-		}
-
 		return \Burrow\Sdk\Client\BurrowClientState::fromArray( $state );
 	}
 

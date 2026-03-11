@@ -57,8 +57,8 @@ class BurrowApiClientScopeTest extends TestCase {
 				'keyPrefix' => 'ing_prj',
 			)
 		);
-		$this->expectException( InvalidArgumentException::class );
-		$this->expectExceptionMessage( 'System event name must be unprefixed' );
+		$this->expectException( \Burrow\Sdk\Events\Exception\EventContractException::class );
+		$this->expectExceptionMessage( 'must be unprefixed' );
 		$method = new ReflectionMethod( BurrowApiClient::class, 'ensure_backfill_project_scope' );
 		$method->setAccessible( true );
 		$method->invoke(

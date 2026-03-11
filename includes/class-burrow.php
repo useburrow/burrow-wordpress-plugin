@@ -425,8 +425,11 @@ class Burrow {
 			return;
 		}
 
+		$sdk     = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
 		$routing = (array) $settings['routing'];
-		$source  = $routing['sourceIds']['forms'] ?? ( $routing['projectSourceId'] ?? '' );
+		$source  = $sdk->formsProjectSourceId ?? ( $routing['projectSourceId'] ?? '' );
 		$tags    = array_merge(
 			array( 'formId' => (string) ( $contract['formHandle'] ?? $payload['formId'] ) ),
 			(array) $mapped['tags']
@@ -445,7 +448,7 @@ class Burrow {
 			array(
 				'projectSourceId' => $source,
 				'integrationId'   => $routing['integrationId'] ?? null,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'forms.submission.received', $contract ),
+				'icon'            => $this->resolve_event_icon( 'forms', 'forms.submission.received', $contract ),
 				'entityType'      => 'form_submission',
 				'externalEntityId'=> (string) $payload['submissionId'],
 				'externalEventId' => sprintf( 'forms:%s:%s', (string) $payload['formId'], (string) $payload['submissionId'] ),
@@ -462,7 +465,7 @@ class Burrow {
 
 		$this->sdk_enqueue_events( array( $envelope ), array(
 			'provider'  => (string) $payload['provider'],
-			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+			'projectId' => $sdk->projectId ?? '',
 			'entityIds' => array(
 				'submissionId' => (string) $payload['submissionId'],
 			),
@@ -739,9 +742,13 @@ class Burrow {
 	 * @return \Burrow\Sdk\Events\ChannelRoutingResolver
 	 */
 	private function build_channel_routing_resolver( array $settings ) {
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+
 		$routing    = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
 		$source_ids = isset( $routing['sourceIds'] ) && is_array( $routing['sourceIds'] ) ? $routing['sourceIds'] : array();
-		$fallback   = isset( $routing['projectSourceId'] ) ? trim( (string) $routing['projectSourceId'] ) : '';
+		$fallback   = $sdk->formsProjectSourceId ?? '';
 
 		$channel_sources = array();
 		foreach ( array( 'forms', 'ecommerce', 'system' ) as $ch ) {
@@ -750,9 +757,9 @@ class Burrow {
 		}
 
 		$state = new \Burrow\Sdk\Events\ChannelRoutingState(
-			projectId: isset( $routing['projectId'] ) ? trim( (string) $routing['projectId'] ) : null,
+			projectId: $sdk->projectId,
 			projectSourceIds: $channel_sources,
-			clientId: isset( $routing['clientId'] ) ? trim( (string) $routing['clientId'] ) : null
+			clientId: $sdk->clientId
 		);
 
 		return new \Burrow\Sdk\Events\ChannelRoutingResolver( $state );
@@ -897,7 +904,7 @@ class Burrow {
 				array(
 					'projectSourceId' => $form_source,
 					'integrationId'   => $settings['routing']['integrationId'] ?? null,
-					'icon'            => $this->resolve_event_icon_override( $settings, 'forms.submission.received', $contract ),
+					'icon'            => $this->resolve_event_icon( 'forms', 'forms.submission.received', $contract ),
 					'entityType'      => 'form_submission',
 					'externalEntityId'=> $submission_id,
 					'externalEventId' => sprintf( 'forms:%s:%s', (string) $form_id, $submission_id ),
@@ -1360,84 +1367,33 @@ class Burrow {
 	 * @param string $provider Provider key.
 	 * @return string
 	 */
-	private function event_source_for_provider( $provider ) {
-		$provider = sanitize_key( (string) $provider );
-		$allowed  = array(
-			'gravity-forms',
-			'fluent-forms',
-			'contact-form-7',
-			'ninja-forms',
-			'woocommerce',
-		);
-		return in_array( $provider, $allowed, true ) ? $provider : 'wordpress-plugin';
+	/**
+	 * Resolve event source via SDK.
+	 *
+	 * @param string $provider Provider slug.
+	 * @param string $channel  Channel.
+	 * @return string
+	 */
+	private function event_source_for_provider( $provider, $channel = 'forms' ) {
+		return \Burrow\Sdk\Events\EventSourceResolver::resolveSourceForEvent( array(
+			'provider' => (string) $provider,
+			'channel'  => (string) $channel,
+		) );
 	}
 
 	/**
-	 * Resolve optional icon override from contract or plugin settings.
+	 * Resolve icon for event via SDK, with optional contract override.
 	 *
-	 * @param array<string,mixed> $settings Plugin settings.
+	 * @param string              $channel    Channel.
 	 * @param string              $event_name Event name.
-	 * @param array<string,mixed> $contract Optional contract metadata.
+	 * @param array<string,mixed> $contract   Optional contract metadata.
 	 * @return string|null
 	 */
-	private function resolve_event_icon_override( array $settings, $event_name, array $contract = array() ) {
-		if ( isset( $contract['icon'] ) ) {
-			$icon = $this->valid_lucide_icon_key( $contract['icon'] );
-			if ( null !== $icon ) {
-				return $icon;
-			}
+	private function resolve_event_icon( $channel, $event_name, array $contract = array() ) {
+		if ( isset( $contract['icon'] ) && is_string( $contract['icon'] ) && '' !== trim( $contract['icon'] ) ) {
+			return trim( $contract['icon'] );
 		}
-		$map = isset( $settings['event_icon_overrides'] ) && is_array( $settings['event_icon_overrides'] )
-			? $settings['event_icon_overrides']
-			: array();
-		if ( isset( $map[ $event_name ] ) ) {
-			$icon = $this->valid_lucide_icon_key( $map[ $event_name ] );
-			if ( null !== $icon ) {
-				return $icon;
-			}
-		}
-		$legacy_event_names = array(
-			'order.placed'   => 'ecommerce.order.placed',
-			'item.purchased' => 'ecommerce.item.purchased',
-			'heartbeat.ping' => 'system.heartbeat.ping',
-			'stack.snapshot' => 'system.stack.snapshot',
-		);
-		if ( isset( $legacy_event_names[ $event_name ] ) && isset( $map[ $legacy_event_names[ $event_name ] ] ) ) {
-			$icon = $this->valid_lucide_icon_key( $map[ $legacy_event_names[ $event_name ] ] );
-			if ( null !== $icon ) {
-				return $icon;
-			}
-		}
-		if ( in_array( (string) $event_name, array( 'order.placed', 'item.purchased', 'order.refunded', 'order.fulfilled' ), true ) ) {
-			return 'shopping-cart';
-		}
-		if ( 'stack.snapshot' === (string) $event_name ) {
-			return 'layers';
-		}
-		if ( 'heartbeat.ping' === (string) $event_name ) {
-			return 'heart';
-		}
-		return null;
-	}
-
-	/**
-	 * Validate Lucide icon key format.
-	 *
-	 * @param mixed $value Icon key.
-	 * @return string|null
-	 */
-	private function valid_lucide_icon_key( $value ) {
-		if ( ! is_scalar( $value ) ) {
-			return null;
-		}
-		$icon = trim( strtolower( (string) $value ) );
-		if ( '' === $icon ) {
-			return null;
-		}
-		if ( 1 !== preg_match( '/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $icon ) ) {
-			return null;
-		}
-		return $icon;
+		return \Burrow\Sdk\Events\EventIconResolver::resolveIconForEvent( (string) $channel, (string) $event_name );
 	}
 
 	public function run() {

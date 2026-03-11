@@ -11,30 +11,47 @@ class LinkStateManager {
 	/**
 	 * Apply Burrow link response payload into plugin settings.
 	 *
+	 * The SDK client state blob is the canonical source of truth for
+	 * ingestionKey, projectId, clientId, formsProjectSourceId, and
+	 * contractMappings.  Plugin settings derive routing from it.
+	 *
 	 * @param array<string,mixed> $settings Existing settings.
-	 * @param array<string,mixed> $body Link response body.
+	 * @param array<string,mixed> $body     Link response body.
 	 * @return array<string,mixed>
 	 */
 	public static function apply_link_response( array $settings, array $body ) {
+		if ( isset( $body['sdkState'] ) && is_array( $body['sdkState'] ) ) {
+			$settings['sdk_state'] = $body['sdkState'];
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+
+		if ( null !== $sdk->projectId ) {
+			$settings['routing']['projectId'] = $sdk->projectId;
+		}
+		if ( null !== $sdk->clientId ) {
+			$settings['routing']['clientId'] = $sdk->clientId;
+		}
+		if ( null !== $sdk->formsProjectSourceId ) {
+			$settings['routing']['projectSourceId'] = $sdk->formsProjectSourceId;
+		}
+		if ( null !== $sdk->ingestionKey ) {
+			$settings['ingestion_key'] = array(
+				'key'       => $sdk->ingestionKey,
+				'projectId' => $sdk->projectId ?? '',
+				'keyPrefix' => '',
+			);
+		}
+
 		$candidates = array( $body );
 		if ( isset( $body['routing'] ) && is_array( $body['routing'] ) ) {
 			$candidates[] = $body['routing'];
 		}
-		if ( isset( $body['selection'] ) && is_array( $body['selection'] ) ) {
-			$candidates[] = $body['selection'];
-		}
-		if ( isset( $body['project'] ) && is_array( $body['project'] ) ) {
-			$candidates[] = $body['project'];
-		}
-
 		foreach ( $candidates as $candidate ) {
-			foreach ( array( 'organizationId', 'clientId', 'projectId' ) as $k ) {
-				if ( isset( $candidate[ $k ] ) && '' !== trim( (string) $candidate[ $k ] ) ) {
-					$settings['routing'][ $k ] = (string) $candidate[ $k ];
-				}
-			}
-			if ( isset( $candidate['projectSourceId'] ) && '' !== trim( (string) $candidate['projectSourceId'] ) ) {
-				$settings['routing']['projectSourceId'] = (string) $candidate['projectSourceId'];
+			if ( isset( $candidate['organizationId'] ) && '' !== trim( (string) $candidate['organizationId'] ) ) {
+				$settings['routing']['organizationId'] = (string) $candidate['organizationId'];
 			}
 			if ( ! empty( $candidate['sourceIds'] ) && is_array( $candidate['sourceIds'] ) ) {
 				$current = isset( $settings['routing']['sourceIds'] ) && is_array( $settings['routing']['sourceIds'] )
@@ -44,31 +61,11 @@ class LinkStateManager {
 			}
 		}
 
-		$ingestion = isset( $body['ingestionKey'] ) && is_array( $body['ingestionKey'] ) ? $body['ingestionKey'] : array();
-		$settings['ingestion_key'] = array(
-			'key'       => isset( $ingestion['key'] ) ? trim( (string) $ingestion['key'] ) : '',
-			'projectId' => isset( $ingestion['projectId'] ) ? trim( (string) $ingestion['projectId'] ) : '',
-			'keyPrefix' => isset( $ingestion['keyPrefix'] ) ? trim( (string) $ingestion['keyPrefix'] ) : '',
-		);
-
 		$project = isset( $body['project'] ) && is_array( $body['project'] ) ? $body['project'] : array();
 		$settings['burrow_project'] = array(
 			'path' => isset( $project['burrowProjectPath'] ) ? trim( (string) $project['burrowProjectPath'] ) : '',
 			'url'  => isset( $project['burrowProjectUrl'] ) ? trim( (string) $project['burrowProjectUrl'] ) : '',
 		);
-		if ( empty( $settings['routing']['projectId'] ) ) {
-			$project_id = isset( $project['projectId'] ) ? trim( (string) $project['projectId'] ) : '';
-			if ( '' === $project_id && isset( $project['id'] ) ) {
-				$project_id = trim( (string) $project['id'] );
-			}
-			if ( '' !== $project_id ) {
-				$settings['routing']['projectId'] = $project_id;
-			}
-		}
-
-		if ( empty( $settings['routing']['projectId'] ) && ! empty( $settings['ingestion_key']['projectId'] ) ) {
-			$settings['routing']['projectId'] = (string) $settings['ingestion_key']['projectId'];
-		}
 
 		self::provision_missing_source_ids( $settings );
 
@@ -82,23 +79,21 @@ class LinkStateManager {
 	 * @return string
 	 */
 	public static function project_url_from_settings( array $settings ) {
-		$path = '';
-		if ( isset( $settings['burrow_project']['path'] ) ) {
-			$path = trim( (string) $settings['burrow_project']['path'] );
-		}
-
 		$url = '';
 		if ( isset( $settings['burrow_project']['url'] ) ) {
 			$url = trim( (string) $settings['burrow_project']['url'] );
 		}
-
-		if ( '' === $path && '' !== $url ) {
-			$parsed_path = parse_url( $url, PHP_URL_PATH );
-			if ( is_string( $parsed_path ) ) {
-				$path = trim( $parsed_path );
+		if ( '' !== $url ) {
+			$valid = filter_var( $url, FILTER_VALIDATE_URL );
+			if ( false !== $valid ) {
+				return (string) $valid;
 			}
 		}
 
+		$path = '';
+		if ( isset( $settings['burrow_project']['path'] ) ) {
+			$path = trim( (string) $settings['burrow_project']['path'] );
+		}
 		$base_url = isset( $settings['base_url'] ) ? trim( (string) $settings['base_url'] ) : '';
 		if ( '' !== $path && '' !== $base_url ) {
 			$origin = self::app_origin_from_base_url( $base_url );
@@ -111,12 +106,7 @@ class LinkStateManager {
 			}
 		}
 
-		if ( '' === $url ) {
-			return '';
-		}
-
-		$valid = filter_var( $url, FILTER_VALIDATE_URL );
-		return false === $valid ? '' : (string) $valid;
+		return '';
 	}
 
 	/**

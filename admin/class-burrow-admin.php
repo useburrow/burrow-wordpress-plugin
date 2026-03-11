@@ -2136,15 +2136,18 @@ class Burrow_Admin {
 	}
 
 	private function build_forms_contract_payload( array $settings ) {
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
 		return array(
 			'platform'      => 'wordpress',
 			'pluginVersion' => BURROW_VERSION,
 			'site'          => array( 'url' => site_url(), 'cmsVersion' => get_bloginfo( 'version' ) ),
 			'routing'       => array(
-				'organizationId' => $settings['routing']['organizationId'],
-				'clientId'       => $settings['routing']['clientId'],
-				'projectId'      => $settings['routing']['projectId'],
-				'projectSourceId'=> $settings['routing']['sourceIds']['forms'] ?? '',
+				'organizationId' => $settings['routing']['organizationId'] ?? '',
+				'clientId'       => $sdk->clientId ?? '',
+				'projectId'      => $sdk->projectId ?? '',
+				'projectSourceId'=> $sdk->formsProjectSourceId ?? '',
 			),
 			'formsContracts' => array_values( (array) $settings['forms_contracts'] ),
 		);
@@ -2181,27 +2184,31 @@ class Burrow_Admin {
 		}
 		$body = (array) ( $response['body'] ?? array() );
 		$s    = $this->options_repo->get_settings();
-		$version = isset( $body['contractsVersion'] ) ? (string) $body['contractsVersion'] : (string) ( $body['version'] ?? '' );
-		$s['contract_sync'] = array(
-			'version'  => $version,
-			'hash'     => (string) ( $body['hash'] ?? '' ),
-			'syncedAt' => gmdate( 'c' ),
-		);
-		$project_source_id = isset( $body['projectSourceId'] ) ? trim( (string) $body['projectSourceId'] ) : '';
-		if ( '' !== $project_source_id ) {
-			$s['routing']['projectSourceId'] = $project_source_id;
-			if ( empty( $s['routing']['sourceIds'] ) || ! is_array( $s['routing']['sourceIds'] ) ) {
-				$s['routing']['sourceIds'] = array();
-			}
-			foreach ( array( 'forms', 'ecommerce', 'system' ) as $ch ) {
-				if ( empty( $s['routing']['sourceIds'][ $ch ] ) ) {
-					$s['routing']['sourceIds'][ $ch ] = $project_source_id;
-				}
-			}
-		}
+
 		if ( isset( $body['sdkState'] ) && is_array( $body['sdkState'] ) ) {
 			$s = $this->apply_sdk_state_to_settings( $s, $body['sdkState'] );
 		}
+
+		$s['contract_sync'] = array(
+			'version'  => isset( $body['contractsVersion'] ) ? (string) $body['contractsVersion'] : (string) ( $body['version'] ?? '' ),
+			'hash'     => (string) ( $body['hash'] ?? '' ),
+			'syncedAt' => gmdate( 'c' ),
+		);
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $s['sdk_state'] ) && is_array( $s['sdk_state'] ) ? $s['sdk_state'] : array()
+		);
+		$project_id = $sdk->projectId ?? '';
+		if ( '' !== $project_id ) {
+			try {
+				$sdk_response = \Burrow\Sdk\Contracts\FormsContractsResponse::fromResponseBody( $body );
+				$cache = \Burrow\Sdk\Contracts\FormsContractCache::fromResponse( $project_id, $sdk_response );
+				$s['forms_contract_cache'] = \Burrow\Sdk\Contracts\FormsContractCacheSerializer::toArray( $cache );
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow] Contract cache serialize failed: ' . $e->getMessage() );
+			}
+		}
+
 		$this->options_repo->save_settings( $s );
 		return __( 'Contracts synced to Burrow.', 'burrow' );
 	}
@@ -2209,48 +2216,46 @@ class Burrow_Admin {
 	/**
 	 * Mirror SDK client state into plugin settings.
 	 *
-	 * @param array<string,mixed> $settings Settings.
-	 * @param array<string,mixed> $sdk_state SDK state.
+	 * The SDK state blob is canonical.  We derive routing/ingestion_key
+	 * from it so existing admin UI and event emission code keeps working.
+	 *
+	 * @param array<string,mixed> $settings  Settings.
+	 * @param array<string,mixed> $sdk_state SDK state array.
 	 * @return array<string,mixed>
 	 */
 	private function apply_sdk_state_to_settings( array $settings, array $sdk_state ) {
 		$settings['sdk_state'] = $sdk_state;
 
-		$ingestion_key = isset( $sdk_state['ingestionKey'] ) ? trim( (string) $sdk_state['ingestionKey'] ) : '';
-		if ( '' !== $ingestion_key ) {
-			if ( empty( $settings['ingestion_key'] ) || ! is_array( $settings['ingestion_key'] ) ) {
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray( $sdk_state );
+
+		if ( null !== $sdk->ingestionKey ) {
+			if ( ! isset( $settings['ingestion_key'] ) || ! is_array( $settings['ingestion_key'] ) ) {
 				$settings['ingestion_key'] = array();
 			}
-			$settings['ingestion_key']['key'] = $ingestion_key;
+			$settings['ingestion_key']['key'] = $sdk->ingestionKey;
 		}
-
-		$project_id = isset( $sdk_state['projectId'] ) ? trim( (string) $sdk_state['projectId'] ) : '';
-		if ( '' !== $project_id ) {
-			$settings['routing']['projectId'] = $project_id;
+		if ( null !== $sdk->projectId ) {
+			$settings['routing']['projectId'] = $sdk->projectId;
 			if ( empty( $settings['ingestion_key']['projectId'] ) ) {
-				$settings['ingestion_key']['projectId'] = $project_id;
+				$settings['ingestion_key']['projectId'] = $sdk->projectId;
 			}
 		}
-
-		$client_id = isset( $sdk_state['clientId'] ) ? trim( (string) $sdk_state['clientId'] ) : '';
-		if ( '' !== $client_id && empty( $settings['routing']['clientId'] ) ) {
-			$settings['routing']['clientId'] = $client_id;
+		if ( null !== $sdk->clientId ) {
+			$settings['routing']['clientId'] = $sdk->clientId;
 		}
-
-		$forms_source = isset( $sdk_state['formsProjectSourceId'] ) ? trim( (string) $sdk_state['formsProjectSourceId'] ) : '';
-		if ( '' !== $forms_source ) {
-			$settings['routing']['projectSourceId'] = $forms_source;
-			if ( empty( $settings['routing']['sourceIds'] ) || ! is_array( $settings['routing']['sourceIds'] ) ) {
+		if ( null !== $sdk->formsProjectSourceId ) {
+			$settings['routing']['projectSourceId'] = $sdk->formsProjectSourceId;
+			if ( ! isset( $settings['routing']['sourceIds'] ) || ! is_array( $settings['routing']['sourceIds'] ) ) {
 				$settings['routing']['sourceIds'] = array();
 			}
-			if ( empty( $settings['routing']['sourceIds']['forms'] ) ) {
-				$settings['routing']['sourceIds']['forms'] = $forms_source;
+			foreach ( array( 'forms', 'ecommerce', 'system' ) as $ch ) {
+				if ( empty( $settings['routing']['sourceIds'][ $ch ] ) ) {
+					$settings['routing']['sourceIds'][ $ch ] = $sdk->formsProjectSourceId;
+				}
 			}
 		}
-
-		$version = isset( $sdk_state['contractsVersion'] ) ? trim( (string) $sdk_state['contractsVersion'] ) : '';
-		if ( '' !== $version ) {
-			$settings['contract_sync']['version'] = $version;
+		if ( null !== $sdk->contractsVersion ) {
+			$settings['contract_sync']['version'] = $sdk->contractsVersion;
 		}
 
 		return $settings;

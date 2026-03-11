@@ -60,6 +60,7 @@ class WpOptionsRepository {
 					),
 				),
 				'forms_contracts'     => array(),
+			'forms_contract_cache'=> array(),
 				'selected_forms'      => array(),
 				'contract_sync'       => array(
 					'version'  => '',
