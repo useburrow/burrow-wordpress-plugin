@@ -4,15 +4,15 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f69a9aa82aff4c42cd1ae34b7485a958",
+    "content-hash": "5ffe5f1b1476996fa5db722c29339750",
     "packages": [
         {
             "name": "useburrow/sdk-php",
-            "version": "0.5.0",
+            "version": "0.6.0",
             "dist": {
                 "type": "path",
                 "url": "../burrow-sdk/php",
-                "reference": "a81955731c51eb25d9a4dcde8838a4dd16ea4a66"
+                "reference": "3b6df25a1e0fdbec5f32ef41615b90af671df0f2"
             },
             "require": {
                 "php": "^8.2"

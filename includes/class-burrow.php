@@ -102,6 +102,7 @@ class Burrow {
 		// WooCommerce hooks.
 		$this->loader->add_action( 'woocommerce_checkout_order_processed', $this, 'handle_woocommerce_order', 10, 1 );
 		$this->loader->add_action( 'woocommerce_payment_complete', $this, 'handle_woocommerce_order', 10, 1 );
+		$this->loader->add_action( 'woocommerce_order_status_changed', $this, 'handle_woocommerce_status_change', 10, 3 );
 	}
 
 	private function define_worker_hooks() {
@@ -301,21 +302,19 @@ class Burrow {
 			return;
 		}
 
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_woo_tracking_enabled( $settings ) ) {
+			return;
+		}
+
 		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
 		$data     = $provider->normalize_order( $order );
 		if ( empty( $data ) ) {
 			return;
 		}
+
 		$submitted_at = $this->resolve_order_timestamp( $order );
 
-		$settings = $this->options_repo->get_settings();
-		$selected_integrations = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
-			? $settings['onboarding']['selected_integrations']
-			: array();
-		$woocommerce_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
-		if ( ! in_array( 'woocommerce', $selected_integrations, true ) || 'track' !== $woocommerce_mode ) {
-			return;
-		}
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
 		} catch ( \Throwable $e ) {
@@ -323,27 +322,10 @@ class Burrow {
 			return;
 		}
 
-		$org_id = (string) ( $settings['routing']['organizationId'] ?? '' );
-
+		$input = $this->build_order_placed_input( $data, $submitted_at, $settings );
 		try {
 			$order_envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
-				array(
-					'organizationId' => $org_id,
-					'orderId'        => (string) $data['orderId'],
-					'orderTotal'     => $data['total'],
-					'total'          => $data['total'],
-					'currency'       => (string) $data['currency'],
-					'itemCount'      => (int) $data['itemCount'],
-					'submittedAt'    => $submitted_at,
-					'timestamp'      => $submitted_at,
-					'tags'           => array(
-						'provider'      => 'woocommerce',
-						'currency'      => (string) $data['currency'],
-						'orderId'       => (string) $data['orderId'],
-						'status'        => (string) $data['status'],
-						'paymentMethod' => (string) $data['paymentMethod'],
-					),
-				),
+				$input,
 				$routing_resolver
 			);
 		} catch ( \Throwable $e ) {
@@ -353,30 +335,12 @@ class Burrow {
 
 		$envelopes = array( $order_envelope );
 
+		$customer_token = (string) $data['customerToken'];
 		foreach ( (array) $data['items'] as $item ) {
+			$item_input = $this->build_item_purchased_input( $item, $data, $submitted_at, $customer_token, $settings );
 			try {
 				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
-					array(
-						'organizationId' => $org_id,
-						'orderId'        => (string) $data['orderId'],
-						'productId'      => (string) $item['productId'],
-						'productName'    => (string) $item['productName'],
-						'quantity'       => (int) $item['quantity'],
-						'unitPrice'      => (float) $item['unitPrice'],
-						'lineTotal'      => (float) $item['lineTotal'],
-						'currency'       => (string) $data['currency'],
-						'submittedAt'    => $submitted_at,
-						'timestamp'      => $submitted_at,
-						'tags'           => array(
-							'provider'    => 'woocommerce',
-							'currency'    => (string) $data['currency'],
-							'orderId'     => (string) $data['orderId'],
-							'productId'   => (string) $item['productId'],
-							'productName' => (string) $item['productName'],
-							'category'    => (string) $item['category'],
-							'vendor'      => (string) $item['vendor'],
-						),
-					),
+					$item_input,
 					$routing_resolver
 				);
 			} catch ( \Throwable $e ) {
@@ -385,10 +349,179 @@ class Burrow {
 			}
 		}
 
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
 		$this->sdk_enqueue_events( $envelopes, array(
 			'provider'  => 'woocommerce',
-			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+			'projectId' => $sdk->projectId ?? '',
 		) );
+	}
+
+	/**
+	 * Handle WooCommerce order status transitions for lifecycle events.
+	 *
+	 * @param int    $order_id   Order ID.
+	 * @param string $old_status Previous status.
+	 * @param string $new_status New status.
+	 */
+	public function handle_woocommerce_status_change( $order_id, $old_status, $new_status ) {
+		$builder_map = array(
+			'completed' => 'buildEcommerceOrderFulfilledEvent',
+			'refunded'  => 'buildEcommerceOrderRefundedEvent',
+			'cancelled' => 'buildEcommerceOrderCancelledEvent',
+		);
+		if ( ! isset( $builder_map[ $new_status ] ) ) {
+			return;
+		}
+		if ( ! function_exists( 'wc_get_order' ) ) {
+			return;
+		}
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			return;
+		}
+
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_woo_tracking_enabled( $settings ) ) {
+			return;
+		}
+
+		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$data     = $provider->normalize_order( $order );
+		if ( empty( $data ) ) {
+			return;
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow ecommerce] Skipped lifecycle: ' . $e->getMessage() );
+			return;
+		}
+
+		$input = array(
+			'organizationId'   => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'          => (string) $data['orderId'],
+			'orderTotal'       => $data['total'],
+			'total'            => $data['total'],
+			'currency'         => (string) $data['currency'],
+			'timestamp'        => $this->resolve_order_timestamp( $order ) ?? gmdate( 'c' ),
+			'externalEntityId' => 'wc_order_' . $data['orderId'],
+			'customerToken'    => (string) $data['customerToken'],
+			'tags'             => array(
+				'provider' => 'woocommerce',
+				'currency' => (string) $data['currency'],
+			),
+		);
+
+		$builder_method = $builder_map[ $new_status ];
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::$builder_method( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow ecommerce] order.' . $new_status . ' build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_enqueue_events( array( $envelope ), array(
+			'provider'  => 'woocommerce',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function is_woo_tracking_enabled( array $settings ) {
+		$selected = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
+			? $settings['onboarding']['selected_integrations']
+			: array();
+		$mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+		return in_array( 'woocommerce', $selected, true ) && 'track' === $mode;
+	}
+
+	/**
+	 * Build input array for order.placed SDK envelope builder.
+	 *
+	 * @param array<string,mixed> $data         Normalized order data.
+	 * @param string|null         $submitted_at ISO timestamp.
+	 * @param array<string,mixed> $settings     Plugin settings.
+	 * @return array<string,mixed>
+	 */
+	private function build_order_placed_input( array $data, $submitted_at, array $settings ) {
+		$tags = array(
+			'provider'        => 'woocommerce',
+			'currency'        => (string) $data['currency'],
+			'customerToken'   => (string) $data['customerToken'],
+			'isGuest'         => (string) $data['isGuest'],
+			'orderSequence'   => (string) $data['orderSequence'],
+			'isNewCustomer'   => (string) $data['isNewCustomer'],
+			'paymentMethod'   => (string) $data['paymentMethod'],
+			'shippingCountry' => (string) $data['shippingCountry'],
+			'shippingRegion'  => (string) $data['shippingRegion'],
+		);
+		if ( ! empty( $data['shippingMethod'] ) ) {
+			$tags['shippingMethod'] = (string) $data['shippingMethod'];
+		}
+		if ( ! empty( $data['couponCode'] ) ) {
+			$tags['couponCode'] = (string) $data['couponCode'];
+		}
+
+		$input = array(
+			'organizationId'   => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'          => (string) $data['orderId'],
+			'orderTotal'       => $data['total'],
+			'total'            => $data['total'],
+			'subtotal'         => $data['subtotal'],
+			'shipping'         => $data['shipping'],
+			'tax'              => $data['tax'],
+			'discount'         => $data['discount'],
+			'currency'         => (string) $data['currency'],
+			'itemCount'        => (int) $data['itemCount'],
+			'submittedAt'      => $submitted_at,
+			'timestamp'        => $submitted_at,
+			'externalEntityId' => 'wc_order_' . $data['orderId'],
+			'customerToken'    => (string) $data['customerToken'],
+			'tags'             => $tags,
+		);
+
+		return $input;
+	}
+
+	/**
+	 * Build input array for item.purchased SDK envelope builder.
+	 *
+	 * @param array<string,mixed> $item           Normalized item data.
+	 * @param array<string,mixed> $data           Normalized order data.
+	 * @param string|null         $submitted_at    ISO timestamp.
+	 * @param string              $customer_token  Opaque customer token.
+	 * @param array<string,mixed> $settings        Plugin settings.
+	 * @return array<string,mixed>
+	 */
+	private function build_item_purchased_input( array $item, array $data, $submitted_at, $customer_token, array $settings ) {
+		return array(
+			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'        => (string) $data['orderId'],
+			'productId'      => (string) $item['productId'],
+			'productName'    => (string) $item['productName'],
+			'quantity'       => (int) $item['quantity'],
+			'unitPrice'      => (float) $item['unitPrice'],
+			'lineTotal'      => (float) $item['lineTotal'],
+			'currency'       => (string) $data['currency'],
+			'submittedAt'    => $submitted_at,
+			'timestamp'      => $submitted_at,
+			'customerToken'  => $customer_token,
+			'tags'           => array(
+				'provider'    => 'woocommerce',
+				'currency'    => (string) $data['currency'],
+				'orderId'     => (string) $data['orderId'],
+				'productId'   => (string) $item['productId'],
+				'productName' => (string) $item['productName'],
+			),
+		);
 	}
 
 	/**
@@ -955,34 +1088,20 @@ class Burrow {
 		} catch ( \Throwable $e ) {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'Missing ecommerce routing: ' . $e->getMessage() );
 		}
-		$org_id   = (string) ( $settings['routing']['organizationId'] ?? '' );
-		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
-		$events   = array();
+		$woo_provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$events       = array();
 		foreach ( $orders as $order ) {
-			$data = $provider->normalize_order( $order );
+			$data = $woo_provider->normalize_order( $order );
 			if ( empty( $data ) ) {
 				continue;
 			}
-			$submitted_at = $this->resolve_order_timestamp( $order );
+			$submitted_at   = $this->resolve_order_timestamp( $order );
+			$customer_token = (string) $data['customerToken'];
+
+			$order_input = $this->build_order_placed_input( $data, $submitted_at, $settings );
 			try {
 				$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
-					array(
-						'organizationId' => $org_id,
-						'orderId'        => (string) $data['orderId'],
-						'orderTotal'     => $data['total'],
-						'total'          => $data['total'],
-						'currency'       => (string) $data['currency'],
-						'itemCount'      => (int) $data['itemCount'],
-						'submittedAt'    => $submitted_at,
-						'timestamp'      => $submitted_at,
-						'tags'           => array(
-							'provider'      => 'woocommerce',
-							'currency'      => (string) $data['currency'],
-							'orderId'       => (string) $data['orderId'],
-							'status'        => (string) $data['status'],
-							'paymentMethod' => (string) $data['paymentMethod'],
-						),
-					),
+					$order_input,
 					$routing_resolver
 				);
 			} catch ( \Throwable $e ) {
@@ -990,26 +1109,10 @@ class Burrow {
 				continue;
 			}
 			foreach ( (array) $data['items'] as $item ) {
+				$item_input = $this->build_item_purchased_input( $item, $data, $submitted_at, $customer_token, $settings );
 				try {
 					$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
-						array(
-							'organizationId' => $org_id,
-							'orderId'        => (string) $data['orderId'],
-							'productId'      => (string) $item['productId'],
-							'productName'    => (string) $item['productName'],
-							'quantity'       => (int) $item['quantity'],
-							'unitPrice'      => (float) $item['unitPrice'],
-							'lineTotal'      => (float) $item['lineTotal'],
-							'currency'       => (string) $data['currency'],
-							'submittedAt'    => $submitted_at,
-							'timestamp'      => $submitted_at,
-							'tags'           => array(
-								'provider'    => 'woocommerce',
-								'currency'    => (string) $data['currency'],
-								'orderId'     => (string) $data['orderId'],
-								'vendor'      => (string) $item['vendor'],
-							),
-						),
+						$item_input,
 						$routing_resolver
 					);
 				} catch ( \Throwable $e ) {
