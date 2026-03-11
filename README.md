@@ -31,6 +31,8 @@ Production-oriented WordPress plugin integration for Burrow onboarding, contract
 Settings are persisted in `burrow_settings` and include:
 
 - API config: `api_key` (encrypted-at-rest), `base_url`
+- Ingestion key state (after link): `ingestion_key.key`, `ingestion_key.projectId`, `ingestion_key.keyPrefix`
+- Burrow project deep-link metadata: `burrow_project.path`, `burrow_project.url`
 - Routing config:
   - `organizationId`
   - `clientId`
@@ -75,6 +77,11 @@ Event `source` is provider-specific for forms/ecommerce and `wordpress-plugin` f
 - `ninja-forms` -> Ninja Forms events
 - `woocommerce` -> WooCommerce order/item events
 - `wordpress-plugin` -> system heartbeat/stack events
+
+## Scoped Event Dispatch
+
+After onboarding link succeeds, the plugin stores Burrow `ingestionKey` data and uses that project-scoped key for event dispatch (`/events` + backfill) while keeping onboarding API calls on the configured API key.
+All dispatched events are scoped to the linked `projectId`.
 
 ## Admin Workflow
 

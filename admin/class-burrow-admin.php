@@ -67,7 +67,7 @@ class Burrow_Admin {
 				$settings['base_url'] = 'https://api.useburrow.com';
 			}
 
-			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 			$res    = $client->discover( $this->build_discover_payload() );
 			if ( empty( $res['ok'] ) ) {
 				$message = __( 'Connection failed.', 'burrow' ) . ' ' . ( $res['error'] ?? '' );
@@ -88,7 +88,7 @@ class Burrow_Admin {
 				$message = __( 'Please select a project.', 'burrow' );
 			} else {
 				$selected = $candidates[ $index ];
-				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 				$res      = $client->link(
 					array(
 						'site'      => array( 'url' => site_url() ),
@@ -166,7 +166,7 @@ class Burrow_Admin {
 				$step    = 'project';
 				$this->redirect_with_notice( $step, $message );
 			}
-			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 			$message = $this->persist_contract_response( $res );
 			$step    = 'backfill';
@@ -276,7 +276,7 @@ class Burrow_Admin {
 					if ( '' !== $routing_error ) {
 						$message = $routing_error;
 					} else {
-						$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+					$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 						$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 						$message = $this->persist_contract_response( $res );
 					}
@@ -494,6 +494,7 @@ class Burrow_Admin {
 		}
 		$settings      = $this->options_repo->get_settings();
 		$retention_days = isset( $settings['outbox_retention_days'] ) ? max( 1, (int) $settings['outbox_retention_days'] ) : 30;
+		$project_url   = BurrowWP\Core\Onboarding\LinkStateManager::project_url_from_settings( $settings );
 		$labels        = $this->integration_labels();
 		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 		$contract_rows = array();
@@ -527,6 +528,9 @@ class Burrow_Admin {
 			<?php $this->render_burrow_page_header( __( 'Burrow Operations', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
 			<p><strong><?php esc_html_e( 'Connected project:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( $settings['routing']['projectId'] ?? '' ) ); ?></p>
+			<?php if ( '' !== $project_url ) : ?>
+				<p><a class="button button-secondary" href="<?php echo esc_url( $project_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'View in Burrow', 'burrow' ); ?></a></p>
+			<?php endif; ?>
 			<p class="description"><?php esc_html_e( 'Queue metrics and delivery details live in the dedicated Outbox view.', 'burrow' ); ?></p>
 
 			<h2 style="margin-top:20px;"><?php esc_html_e( 'Outbox Settings', 'burrow' ); ?></h2>
@@ -1802,29 +1806,7 @@ class Burrow_Admin {
 		}
 		$body     = (array) ( $response['body'] ?? array() );
 		$settings = $this->options_repo->get_settings();
-		$candidates = array( $body );
-		if ( isset( $body['routing'] ) && is_array( $body['routing'] ) ) {
-			$candidates[] = $body['routing'];
-		}
-		if ( isset( $body['selection'] ) && is_array( $body['selection'] ) ) {
-			$candidates[] = $body['selection'];
-		}
-		if ( isset( $body['project'] ) && is_array( $body['project'] ) ) {
-			$candidates[] = $body['project'];
-		}
-		foreach ( $candidates as $candidate ) {
-			foreach ( array( 'organizationId', 'clientId', 'projectId' ) as $k ) {
-				if ( isset( $candidate[ $k ] ) && '' !== (string) $candidate[ $k ] ) {
-					$settings['routing'][ $k ] = (string) $candidate[ $k ];
-				}
-			}
-			if ( isset( $candidate['projectSourceId'] ) && '' !== (string) $candidate['projectSourceId'] ) {
-				$settings['routing']['projectSourceId'] = (string) $candidate['projectSourceId'];
-			}
-			if ( ! empty( $candidate['sourceIds'] ) && is_array( $candidate['sourceIds'] ) ) {
-				$settings['routing']['sourceIds'] = array_merge( $settings['routing']['sourceIds'], $candidate['sourceIds'] );
-			}
-		}
+		$settings = BurrowWP\Core\Onboarding\LinkStateManager::apply_link_response( $settings, $body );
 		$this->options_repo->save_settings( $settings );
 		if ( empty( $settings['routing']['projectId'] ) ) {
 			return __( 'Project linked response received, but projectId was missing. Please reselect and link the project.', 'burrow' );

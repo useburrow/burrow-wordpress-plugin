@@ -31,6 +31,15 @@ class WpOptionsRepository {
 			array(
 				'api_key'             => '',
 				'base_url'            => 'https://api.useburrow.com',
+				'ingestion_key'       => array(
+					'key'       => '',
+					'projectId' => '',
+					'keyPrefix' => '',
+				),
+				'burrow_project'      => array(
+					'path' => '',
+					'url'  => '',
+				),
 				'routing'             => array(
 					'organizationId' => '',
 					'clientId'       => '',

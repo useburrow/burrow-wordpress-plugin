@@ -19,6 +19,11 @@ class BurrowApiClient {
 	private $api_key;
 
 	/**
+	 * @var array<string,mixed>
+	 */
+	private $ingestion_key;
+
+	/**
 	 * @var int
 	 */
 	private $timeout;
@@ -29,14 +34,20 @@ class BurrowApiClient {
 	private $sdk_client_instance;
 
 	/**
+	 * @var \Burrow\Sdk\Client\BurrowClient|null
+	 */
+	private $dispatch_sdk_client_instance;
+
+	/**
 	 * @var \Burrow\Sdk\Transport\ConcurrentHttpTransportInterface|null
 	 */
 	private $sdk_transport_instance;
 
-	public function __construct( $base_url, $api_key, $timeout = 5 ) {
+	public function __construct( $base_url, $api_key, $timeout = 5, array $ingestion_key = array() ) {
 		$this->base_url = rtrim( (string) $base_url, '/' );
 		$this->api_key  = (string) $api_key;
 		$this->timeout  = max( 1, (int) $timeout );
+		$this->ingestion_key = $ingestion_key;
 	}
 
 	/**
@@ -136,7 +147,8 @@ class BurrowApiClient {
 	 */
 	public function publish_event( array $payload ) {
 		try {
-			$response = $this->sdk_client()->publishEvent( $payload );
+			$payload  = $this->ensure_event_project_scope( $payload );
+			$response = $this->dispatch_sdk_client()->publishEvent( $payload );
 			return $this->format_sdk_response( $response );
 		} catch ( \Burrow\Sdk\Client\Exception\UnexpectedResponseStatusException $e ) {
 			return $this->format_status_exception( $e );
@@ -153,6 +165,7 @@ class BurrowApiClient {
 	 */
 	public function backfill_events( array $payload ) {
 		try {
+			$payload = $this->ensure_backfill_project_scope( $payload );
 			$request = new \Burrow\Sdk\Contracts\BackfillEventsRequest(
 				isset( $payload['events'] ) && is_array( $payload['events'] ) ? $payload['events'] : array(),
 				$this->backfill_window_from_payload( $payload )
@@ -162,7 +175,7 @@ class BurrowApiClient {
 				max( 1, (int) ( $payload['perKeyConcurrency'] ?? 4 ) )
 			);
 
-			$result = $this->sdk_client()->backfillEvents( $request, $options );
+			$result = $this->dispatch_sdk_client()->backfillEvents( $request, $options );
 			return array(
 				'ok'           => true,
 				'status'       => 200,
@@ -206,6 +219,24 @@ class BurrowApiClient {
 		);
 
 		return $this->sdk_client_instance;
+	}
+
+	/**
+	 * @return \Burrow\Sdk\Client\BurrowClient
+	 */
+	private function dispatch_sdk_client() {
+		if ( null !== $this->dispatch_sdk_client_instance ) {
+			return $this->dispatch_sdk_client_instance;
+		}
+
+		$dispatch_key = \BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_api_key( $this->api_key, $this->ingestion_key );
+		$this->dispatch_sdk_client_instance = new \Burrow\Sdk\Client\BurrowClient(
+			$this->base_url,
+			$dispatch_key,
+			$this->sdk_transport()
+		);
+
+		return $this->dispatch_sdk_client_instance;
 	}
 
 	/**
@@ -334,5 +365,44 @@ class BurrowApiClient {
 			isset( $payload['windowEnd'] ) ? (string) $payload['windowEnd'] : null,
 			isset( $payload['source'] ) ? (string) $payload['source'] : null
 		);
+	}
+
+	/**
+	 * Ensure dispatch payload includes linked project id.
+	 *
+	 * @param array<string,mixed> $event Event payload.
+	 * @return array<string,mixed>
+	 */
+	private function ensure_event_project_scope( array $event ) {
+		$current_project_id = isset( $event['projectId'] ) ? trim( (string) $event['projectId'] ) : '';
+		$linked_project_id  = \BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_project_id( $current_project_id, $this->ingestion_key );
+		if ( '' !== $linked_project_id ) {
+			$event['projectId'] = $linked_project_id;
+		}
+		return $event;
+	}
+
+	/**
+	 * Ensure all backfill events include linked project id.
+	 *
+	 * @param array<string,mixed> $payload Backfill payload.
+	 * @return array<string,mixed>
+	 */
+	private function ensure_backfill_project_scope( array $payload ) {
+		$events = isset( $payload['events'] ) && is_array( $payload['events'] ) ? $payload['events'] : array();
+		$updated = array();
+		foreach ( $events as $event ) {
+			$updated[] = is_array( $event ) ? $this->ensure_event_project_scope( $event ) : $event;
+		}
+		$payload['events'] = $updated;
+
+		$defaults = isset( $payload['routingDefaults'] ) && is_array( $payload['routingDefaults'] ) ? $payload['routingDefaults'] : array();
+		$current_project_id = isset( $defaults['projectId'] ) ? trim( (string) $defaults['projectId'] ) : '';
+		$linked_project_id  = \BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_project_id( $current_project_id, $this->ingestion_key );
+		if ( '' !== $linked_project_id ) {
+			$defaults['projectId'] = $linked_project_id;
+			$payload['routingDefaults'] = $defaults;
+		}
+		return $payload;
 	}
 }

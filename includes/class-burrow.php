@@ -416,7 +416,7 @@ class Burrow {
 	 */
 	public function run_outbox_worker() {
 		$settings = $this->options_repo->get_settings();
-		$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+		$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 		$worker   = new BurrowWP\Core\Outbox\OutboxWorker(
 			$this->outbox_repo,
 			$client,
@@ -596,7 +596,7 @@ class Burrow {
 			return;
 		}
 
-		$client  = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+		$client  = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
 		$payload = array(
 			'events'            => $events,
 			'cursor'            => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),

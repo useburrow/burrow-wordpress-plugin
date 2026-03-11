@@ -1,0 +1,71 @@
+<?php
+
+use BurrowWP\Core\Onboarding\LinkStateManager;
+use PHPUnit\Framework\TestCase;
+
+class LinkStateManagerTest extends TestCase {
+	public function test_link_response_persists_ingestion_key_and_deep_link_fields() {
+		$settings = array(
+			'routing' => array(
+				'organizationId' => '',
+				'clientId'       => '',
+				'projectId'      => '',
+				'projectSourceId'=> '',
+				'sourceIds'      => array(),
+			),
+		);
+		$body = array(
+			'routing' => array(
+				'organizationId' => 'org_1',
+				'clientId'       => 'cli_1',
+				'projectId'      => 'prj_1',
+				'projectSourceId'=> 'src_forms_1',
+				'sourceIds'      => array(
+					'forms' => 'src_forms_1',
+				),
+			),
+			'ingestionKey' => array(
+				'key'       => 'ing_prj_key',
+				'projectId' => 'prj_1',
+				'keyPrefix' => 'ing_prj',
+			),
+			'project' => array(
+				'burrowProjectPath' => '/clients/cli_1/projects/prj_1',
+				'burrowProjectUrl'  => 'https://app.useburrow.com/clients/cli_1/projects/prj_1',
+			),
+		);
+
+		$updated = LinkStateManager::apply_link_response( $settings, $body );
+		$this->assertSame( 'org_1', $updated['routing']['organizationId'] );
+		$this->assertSame( 'prj_1', $updated['routing']['projectId'] );
+		$this->assertSame( 'ing_prj_key', $updated['ingestion_key']['key'] );
+		$this->assertSame( 'prj_1', $updated['ingestion_key']['projectId'] );
+		$this->assertSame( 'ing_prj', $updated['ingestion_key']['keyPrefix'] );
+		$this->assertSame( '/clients/cli_1/projects/prj_1', $updated['burrow_project']['path'] );
+		$this->assertSame( 'https://app.useburrow.com/clients/cli_1/projects/prj_1', $updated['burrow_project']['url'] );
+	}
+
+	public function test_project_deep_link_url_returns_blank_for_missing_or_invalid_url() {
+		$this->assertSame( '', LinkStateManager::project_url_from_settings( array() ) );
+		$this->assertSame(
+			'',
+			LinkStateManager::project_url_from_settings(
+				array(
+					'burrow_project' => array(
+						'url' => 'not a url',
+					),
+				)
+			)
+		);
+		$this->assertSame(
+			'https://app.useburrow.com/projects/prj_1',
+			LinkStateManager::project_url_from_settings(
+				array(
+					'burrow_project' => array(
+						'url' => 'https://app.useburrow.com/projects/prj_1',
+					),
+				)
+			)
+		);
+	}
+}
