@@ -37,6 +37,9 @@ class WooCommerceProvider implements EcommerceProviderInterface {
 		return array(
 			'orderId'       => $order_id,
 			'total'         => (float) $order->get_total(),
+			'subtotal'      => method_exists( $order, 'get_subtotal' ) ? (float) $order->get_subtotal() : null,
+			'shipping'      => method_exists( $order, 'get_shipping_total' ) ? (float) $order->get_shipping_total() : null,
+			'discount'      => method_exists( $order, 'get_discount_total' ) ? (float) $order->get_discount_total() : null,
 			'currency'      => (string) $order->get_currency(),
 			'itemCount'     => $item_count,
 			'status'        => (string) $order->get_status(),

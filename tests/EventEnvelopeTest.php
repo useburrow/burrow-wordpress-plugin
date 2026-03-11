@@ -76,7 +76,7 @@ class EventEnvelopeTest extends TestCase {
 
 		foreach ( $providers as $provider ) {
 			$channel = 'woocommerce' === $provider ? 'ecommerce' : 'forms';
-			$event   = 'woocommerce' === $provider ? 'ecommerce.order.placed' : 'forms.submission.received';
+			$event   = 'woocommerce' === $provider ? 'order.placed' : 'forms.submission.received';
 			$payload = $factory->build(
 				array(
 					'organizationId' => 'org_123',
@@ -103,7 +103,7 @@ class EventEnvelopeTest extends TestCase {
 			),
 			array(
 				'channel'   => 'system',
-				'event'     => 'system.heartbeat.ping',
+				'event'     => 'heartbeat.ping',
 				'timestamp' => '2026-03-07T00:00:00.000Z',
 			)
 		);

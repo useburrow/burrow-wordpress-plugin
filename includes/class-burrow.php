@@ -247,30 +247,40 @@ class Burrow {
 			return;
 		}
 		$routing  = (array) $settings['routing'];
-		$source   = $routing['sourceIds']['ecommerce'] ?? ( $routing['projectSourceId'] ?? '' );
+		$source   = isset( $routing['sourceIds']['ecommerce'] ) ? trim( (string) $routing['sourceIds']['ecommerce'] ) : '';
+		if ( '' === $source ) {
+			error_log( '[Burrow ecommerce] Missing ecommerce source id; skipping Woo order emission.' );
+			return;
+		}
 
 		$order_envelope = $this->envelopes->build(
 			$routing,
 			array(
 				'projectSourceId' => $source,
 				'integrationId'   => $routing['integrationId'] ?? null,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'ecommerce.order.placed' ),
+				'icon'            => $this->resolve_event_icon_override( $settings, 'order.placed' ),
 				'entityType'      => 'order',
 				'externalEntityId'=> (string) $data['orderId'],
 				'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
 				'channel'         => 'ecommerce',
-				'event'           => 'ecommerce.order.placed',
+				'event'           => 'order.placed',
 				'source'          => $this->event_source_for_provider( 'woocommerce' ),
 				'description'     => 'Order placed',
 				'timestamp'       => $submitted_at,
 				'properties'      => array(
-					'orderId'   => $data['orderId'],
-					'total'     => $data['total'],
-					'currency'  => $data['currency'],
-					'itemCount' => $data['itemCount'],
+					'orderId'     => $data['orderId'],
+					'orderTotal'  => $data['total'],
+					'total'       => $data['total'],
+					'subtotal'    => isset( $data['subtotal'] ) ? $data['subtotal'] : null,
+					'shipping'    => isset( $data['shipping'] ) ? $data['shipping'] : null,
+					'discount'    => isset( $data['discount'] ) ? $data['discount'] : null,
+					'currency'    => $data['currency'],
+					'itemCount'   => $data['itemCount'],
 					'submittedAt' => $submitted_at,
 				),
 				'tags'            => array(
+					'provider'      => 'woocommerce',
+					'currency'      => (string) $data['currency'],
 					'orderId'       => (string) $data['orderId'],
 					'status'        => (string) $data['status'],
 					'paymentMethod' => (string) $data['paymentMethod'],
@@ -281,7 +291,7 @@ class Burrow {
 		$this->outbox_repo->enqueue(
 			$this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
 			'ecommerce',
-			'ecommerce.order.placed',
+			'order.placed',
 			$order_envelope,
 			(int) $settings['max_attempts']
 		);
@@ -293,26 +303,30 @@ class Burrow {
 				array(
 					'projectSourceId' => $source,
 					'integrationId'   => $routing['integrationId'] ?? null,
-					'icon'            => $this->resolve_event_icon_override( $settings, 'ecommerce.item.purchased' ),
+					'icon'            => $this->resolve_event_icon_override( $settings, 'item.purchased' ),
 					'entityType'      => 'order_item',
 					'externalEntityId'=> (string) ( $item['lineItemId'] ?? '' ),
 					'externalEventId' => $item_event_key,
 					'channel'         => 'ecommerce',
-					'event'           => 'ecommerce.item.purchased',
+					'event'           => 'item.purchased',
 					'source'          => $this->event_source_for_provider( 'woocommerce' ),
 					'description'     => 'Order item purchased',
 					'timestamp'       => $submitted_at,
 					'properties'      => array(
 						'orderId'     => $data['orderId'],
+						'productId'   => $item['productId'],
 						'productName' => $item['productName'],
 						'variantName' => $item['variantName'],
 						'quantity'    => $item['quantity'],
 						'unitPrice'   => $item['unitPrice'],
 						'lineTotal'   => $item['lineTotal'],
+						'currency'    => $data['currency'],
 						'productUrl'  => $item['productUrl'],
 						'submittedAt' => $submitted_at,
 					),
 					'tags'            => array(
+						'provider'    => 'woocommerce',
+						'currency'    => (string) $data['currency'],
 						'orderId'     => (string) $data['orderId'],
 						'productId'   => (string) $item['productId'],
 						'productName' => (string) $item['productName'],
@@ -325,7 +339,7 @@ class Burrow {
 			$this->outbox_repo->enqueue(
 				$item_event_key,
 				'ecommerce',
-				'ecommerce.item.purchased',
+				'item.purchased',
 				$item_envelope,
 				(int) $settings['max_attempts']
 			);
@@ -439,26 +453,30 @@ class Burrow {
 	public function emit_system_heartbeat() {
 		$settings = $this->options_repo->get_settings();
 		$routing  = (array) $settings['routing'];
-		$source   = $routing['sourceIds']['system'] ?? ( $routing['projectSourceId'] ?? '' );
+		$source   = isset( $routing['sourceIds']['system'] ) ? trim( (string) $routing['sourceIds']['system'] ) : '';
+		if ( '' === $source ) {
+			error_log( '[Burrow system] Missing system source id; skipping heartbeat emission.' );
+			return;
+		}
 		$envelope = $this->envelopes->build(
 			$routing,
 			array(
 				'projectSourceId' => $source,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'system.heartbeat.ping' ),
+				'icon'            => $this->resolve_event_icon_override( $settings, 'heartbeat.ping' ),
 				'channel'         => 'system',
-				'event'           => 'system.heartbeat.ping',
+				'event'           => 'heartbeat.ping',
+				'source'          => 'snapshot',
 				'description'     => 'Plugin heartbeat',
 				'properties'      => array(
-					'status'    => 'ok',
-					'latencyMs' => 0,
+					'responseMs' => 0,
 				),
-				'tags'            => array( 'status' => 'ok' ),
+				'tags'            => array( 'provider' => 'snapshot' ),
 			)
 		);
 		$this->outbox_repo->enqueue(
 			'system:heartbeat:' . gmdate( 'YmdH' ),
 			'system',
-			'system.heartbeat.ping',
+			'heartbeat.ping',
 			$envelope,
 			(int) $settings['max_attempts']
 		);
@@ -472,29 +490,36 @@ class Burrow {
 	public function emit_system_stack_snapshot() {
 		$settings  = $this->options_repo->get_settings();
 		$routing   = (array) $settings['routing'];
-		$source    = $routing['sourceIds']['system'] ?? ( $routing['projectSourceId'] ?? '' );
+		$source    = isset( $routing['sourceIds']['system'] ) ? trim( (string) $routing['sourceIds']['system'] ) : '';
+		if ( '' === $source ) {
+			error_log( '[Burrow system] Missing system source id; skipping stack snapshot emission.' );
+			return;
+		}
 		$collector = new BurrowWP\Core\System\SystemMetricsCollector();
 		$snapshot  = $collector->collect_stack_snapshot();
 		$envelope  = $this->envelopes->build(
 			$routing,
 			array(
 				'projectSourceId' => $source,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'system.stack.snapshot' ),
+				'icon'            => $this->resolve_event_icon_override( $settings, 'stack.snapshot' ),
 				'channel'         => 'system',
-				'event'           => 'system.stack.snapshot',
+				'event'           => 'stack.snapshot',
+				'source'          => 'snapshot',
 				'description'     => 'Daily stack snapshot',
 				'properties'      => $snapshot,
 				'tags'            => array(
 					'cmsVersion' => (string) get_bloginfo( 'version' ),
 					'phpVersion' => (string) phpversion(),
 					'hasUpdates' => ! empty( $snapshot['updatesAvailable'] ) ? 'true' : 'false',
+					'updatesCount' => (string) (int) ( $snapshot['updatesAvailable'] ?? 0 ),
+					'provider'   => 'snapshot',
 				),
 			)
 		);
 		$this->outbox_repo->enqueue(
 			'system:stack:' . gmdate( 'Ymd' ),
 			'system',
-			'system.stack.snapshot',
+			'stack.snapshot',
 			$envelope,
 			(int) $settings['max_attempts']
 		);
@@ -545,6 +570,16 @@ class Burrow {
 		$keys         = array_values( array_unique( array_merge( $keys, $current_keys ) ) );
 		$job['activeContractKeys'] = $keys;
 		$job['totalForms']         = count( $keys );
+		$has_woo_key = in_array( 'woocommerce:orders', $keys, true );
+		$ecommerce_source = isset( $settings['routing']['sourceIds']['ecommerce'] ) ? trim( (string) $settings['routing']['sourceIds']['ecommerce'] ) : '';
+		if ( $has_woo_key && '' === $ecommerce_source ) {
+			$job['status']    = 'failed';
+			$job['lastError'] = 'Missing ecommerce project source id. Re-link project and confirm ecommerce source provisioning before Woo backfill.';
+			$job['updatedAt'] = gmdate( 'c' );
+			$settings['backfill'] = $job;
+			$this->options_repo->save_settings( $settings );
+			return;
+		}
 
 		$cursor = isset( $job['cursor'] ) && is_array( $job['cursor'] ) ? $job['cursor'] : array();
 		$batch_size = max( 1, min( 100, (int) ( $job['batchSize'] ?? 100 ) ) );
@@ -834,7 +869,10 @@ class Burrow {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
 		}
 		$routing  = (array) ( $settings['routing'] ?? array() );
-		$source   = $routing['sourceIds']['ecommerce'] ?? ( $routing['projectSourceId'] ?? '' );
+		$source   = isset( $routing['sourceIds']['ecommerce'] ) ? trim( (string) $routing['sourceIds']['ecommerce'] ) : '';
+		if ( '' === $source ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'Missing ecommerce source id. Re-link project to provision ecommerce source.' );
+		}
 		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
 		$events   = array();
 		foreach ( $orders as $order ) {
@@ -848,23 +886,29 @@ class Burrow {
 				array(
 					'projectSourceId' => $source,
 					'integrationId'   => $routing['integrationId'] ?? null,
-					'icon'            => $this->resolve_event_icon_override( $settings, 'ecommerce.order.placed' ),
+					'icon'            => $this->resolve_event_icon_override( $settings, 'order.placed' ),
 					'entityType'      => 'order',
 					'externalEntityId'=> (string) $data['orderId'],
 					'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
 					'channel'         => 'ecommerce',
-					'event'           => 'ecommerce.order.placed',
+					'event'           => 'order.placed',
 					'source'          => $this->event_source_for_provider( 'woocommerce' ),
 					'description'     => 'Backfilled order placed',
 					'timestamp'       => $submitted_at,
 					'properties'      => array(
-						'orderId'   => $data['orderId'],
-						'total'     => $data['total'],
-						'currency'  => $data['currency'],
-						'itemCount' => $data['itemCount'],
+						'orderId'     => $data['orderId'],
+						'orderTotal'  => $data['total'],
+						'total'       => $data['total'],
+						'subtotal'    => isset( $data['subtotal'] ) ? $data['subtotal'] : null,
+						'shipping'    => isset( $data['shipping'] ) ? $data['shipping'] : null,
+						'discount'    => isset( $data['discount'] ) ? $data['discount'] : null,
+						'currency'    => $data['currency'],
+						'itemCount'   => $data['itemCount'],
 						'submittedAt' => $submitted_at,
 					),
 					'tags'            => array(
+						'provider'      => 'woocommerce',
+						'currency'      => (string) $data['currency'],
 						'orderId'       => (string) $data['orderId'],
 						'status'        => (string) $data['status'],
 						'paymentMethod' => (string) $data['paymentMethod'],
@@ -878,26 +922,30 @@ class Burrow {
 					array(
 						'projectSourceId' => $source,
 						'integrationId'   => $routing['integrationId'] ?? null,
-						'icon'            => $this->resolve_event_icon_override( $settings, 'ecommerce.item.purchased' ),
+						'icon'            => $this->resolve_event_icon_override( $settings, 'item.purchased' ),
 						'entityType'      => 'order_item',
 						'externalEntityId'=> (string) ( $item['lineItemId'] ?? '' ),
 						'externalEventId' => $item_event_key,
 						'channel'         => 'ecommerce',
-						'event'           => 'ecommerce.item.purchased',
+						'event'           => 'item.purchased',
 						'source'          => $this->event_source_for_provider( 'woocommerce' ),
 						'description'     => 'Backfilled order item purchased',
 						'timestamp'       => $submitted_at,
 						'properties'      => array(
 							'orderId'     => $data['orderId'],
+							'productId'   => $item['productId'],
 							'productName' => $item['productName'],
 							'variantName' => $item['variantName'],
 							'quantity'    => $item['quantity'],
 							'unitPrice'   => $item['unitPrice'],
 							'lineTotal'   => $item['lineTotal'],
+							'currency'    => $data['currency'],
 							'productUrl'  => $item['productUrl'],
 							'submittedAt' => $submitted_at,
 						),
 						'tags'            => array(
+							'provider'    => 'woocommerce',
+							'currency'    => (string) $data['currency'],
 							'orderId'     => (string) $data['orderId'],
 							'productId'   => (string) $item['productId'],
 							'productName' => (string) $item['productName'],
@@ -1292,6 +1340,27 @@ class Burrow {
 			if ( null !== $icon ) {
 				return $icon;
 			}
+		}
+		$legacy_event_names = array(
+			'order.placed'   => 'ecommerce.order.placed',
+			'item.purchased' => 'ecommerce.item.purchased',
+			'heartbeat.ping' => 'system.heartbeat.ping',
+			'stack.snapshot' => 'system.stack.snapshot',
+		);
+		if ( isset( $legacy_event_names[ $event_name ] ) && isset( $map[ $legacy_event_names[ $event_name ] ] ) ) {
+			$icon = $this->valid_lucide_icon_key( $map[ $legacy_event_names[ $event_name ] ] );
+			if ( null !== $icon ) {
+				return $icon;
+			}
+		}
+		if ( in_array( (string) $event_name, array( 'order.placed', 'item.purchased', 'order.refunded', 'order.fulfilled' ), true ) ) {
+			return 'shopping-cart';
+		}
+		if ( 'stack.snapshot' === (string) $event_name ) {
+			return 'layers';
+		}
+		if ( 'heartbeat.ping' === (string) $event_name ) {
+			return 'heart';
 		}
 		return null;
 	}

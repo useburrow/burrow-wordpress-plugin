@@ -174,6 +174,7 @@ class BurrowApiClient {
 	 */
 	public function publish_event( array $payload ) {
 		try {
+			$this->assert_event_name_contract( $payload );
 			$payload  = $this->ensure_event_project_scope( $payload );
 			$response = $this->dispatch_sdk_client()->publishEvent( $payload );
 			return $this->format_sdk_response( $response );
@@ -528,7 +529,12 @@ class BurrowApiClient {
 		$events = isset( $payload['events'] ) && is_array( $payload['events'] ) ? $payload['events'] : array();
 		$updated = array();
 		foreach ( $events as $event ) {
-			$updated[] = is_array( $event ) ? $this->ensure_event_project_scope( $event ) : $event;
+			if ( is_array( $event ) ) {
+				$this->assert_event_name_contract( $event );
+				$updated[] = $this->ensure_event_project_scope( $event );
+			} else {
+				$updated[] = $event;
+			}
 		}
 		$payload['events'] = $updated;
 
@@ -540,6 +546,22 @@ class BurrowApiClient {
 			$payload['routingDefaults'] = $defaults;
 		}
 		return $payload;
+	}
+
+	/**
+	 * Guard against unsupported prefixed system event names.
+	 *
+	 * @param array<string,mixed> $event Event payload.
+	 * @return void
+	 */
+	private function assert_event_name_contract( array $event ) {
+		$channel = isset( $event['channel'] ) ? trim( (string) $event['channel'] ) : '';
+		$name    = isset( $event['event'] ) ? trim( (string) $event['event'] ) : '';
+		if ( 'system' === $channel && '' !== $name && 0 === strpos( $name, 'system.' ) ) {
+			throw new \InvalidArgumentException(
+				sprintf( 'System event name must be unprefixed (received "%s").', $name )
+			);
+		}
 	}
 
 	/**

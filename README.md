@@ -17,10 +17,10 @@ Production-oriented WordPress plugin integration for Burrow onboarding, contract
   - Contact Form 7
   - Fluent Forms
 - Ecommerce provider (Phase 1):
-  - WooCommerce (`ecommerce.order.placed`, `ecommerce.item.purchased`)
+  - WooCommerce (`order.placed`, `item.purchased`)
 - System events:
-  - `system.heartbeat.ping` (hourly)
-  - `system.stack.snapshot` (daily)
+  - `heartbeat.ping` (hourly)
+  - `stack.snapshot` (daily)
 - Durable local outbox:
   - enqueue-first delivery (never block user submission flow)
   - retry on retryable failures with exponential backoff
@@ -69,14 +69,14 @@ Activation migration creates `{prefix}burrow_outbox` with:
 
 ## Event Source Slugs
 
-Event `source` is provider-specific for forms/ecommerce and `wordpress-plugin` for system events.
+Event `source` is provider-specific. System snapshots/heartbeats use `snapshot`.
 
 - `gravity-forms` -> Gravity Forms events
 - `fluent-forms` -> Fluent Forms events
 - `contact-form-7` -> Contact Form 7 events
 - `ninja-forms` -> Ninja Forms events
 - `woocommerce` -> WooCommerce order/item events
-- `wordpress-plugin` -> system heartbeat/stack events
+- `snapshot` -> system heartbeat/stack events
 
 ## Scoped Event Dispatch
 
