@@ -61,6 +61,86 @@ class WooCommerceProvider implements EcommerceProviderInterface {
 	}
 
 	/**
+	 * Normalize a cart item after it has been added/updated.
+	 *
+	 * @param string              $cart_item_key Cart item key.
+	 * @param array<string,mixed> $cart_item     Cart item data from WC()->cart.
+	 * @return array<string,mixed>
+	 */
+	public function normalize_cart_item( $cart_item_key, array $cart_item ) {
+		$product   = isset( $cart_item['data'] ) && is_object( $cart_item['data'] ) ? $cart_item['data'] : null;
+		$quantity  = isset( $cart_item['quantity'] ) ? (int) $cart_item['quantity'] : 1;
+		$unit_price = $product && method_exists( $product, 'get_price' ) ? (float) $product->get_price() : 0.0;
+
+		$category = '';
+		if ( $product ) {
+			$terms = get_the_terms( $product->get_id(), 'product_cat' );
+			if ( is_array( $terms ) && ! empty( $terms ) ) {
+				$category = (string) $terms[0]->name;
+			}
+		}
+
+		return array(
+			'cartItemKey' => (string) $cart_item_key,
+			'productId'   => $product ? (string) $product->get_id() : '',
+			'productName' => $product ? (string) $product->get_name() : '',
+			'variantName' => ( $product && method_exists( $product, 'get_attribute_summary' ) ) ? (string) $product->get_attribute_summary() : '',
+			'quantity'    => $quantity,
+			'unitPrice'   => $unit_price,
+			'lineTotal'   => $unit_price * $quantity,
+			'category'    => $category,
+		);
+	}
+
+	/**
+	 * Get current cart state (totals, item count, currency).
+	 *
+	 * @return array{cartTotal: float, cartItemCount: int, currency: string}
+	 */
+	public function get_cart_state() {
+		$cart = function_exists( 'WC' ) && WC()->cart ? WC()->cart : null;
+		if ( ! $cart ) {
+			return array( 'cartTotal' => 0.0, 'cartItemCount' => 0, 'currency' => '' );
+		}
+		return array(
+			'cartTotal'     => (float) $cart->get_cart_contents_total() + (float) $cart->get_cart_contents_tax(),
+			'cartItemCount' => (int) $cart->get_cart_contents_count(),
+			'currency'      => function_exists( 'get_woocommerce_currency' ) ? (string) get_woocommerce_currency() : '',
+		);
+	}
+
+	/**
+	 * Build opaque customer identity from WC session (non-order context).
+	 *
+	 * @return array{customerToken: string, isGuest: string}
+	 */
+	public static function build_session_customer_identity() {
+		$user_id = get_current_user_id();
+		if ( $user_id > 0 ) {
+			return array(
+				'customerToken' => 'wc_cust_' . $user_id,
+				'isGuest'       => 'false',
+			);
+		}
+
+		$email = '';
+		if ( function_exists( 'WC' ) && WC()->session ) {
+			$customer = WC()->session->get( 'customer' );
+			if ( is_array( $customer ) && ! empty( $customer['email'] ) ) {
+				$email = (string) $customer['email'];
+			}
+		}
+		if ( '' === $email ) {
+			$email = function_exists( 'WC' ) && WC()->session ? 'anon_' . WC()->session->get_customer_id() : 'anon_' . wp_generate_uuid4();
+		}
+
+		return array(
+			'customerToken' => 'wc_guest_' . substr( hash( 'sha256', $email ), 0, 12 ),
+			'isGuest'       => 'true',
+		);
+	}
+
+	/**
 	 * Build opaque customer identity from an order.
 	 * Never exposes names, emails, or cleartext WooCommerce user IDs.
 	 *

@@ -19,5 +19,6 @@ class Burrow_Deactivator {
 		wp_clear_scheduled_hook( 'burrow_system_heartbeat' );
 		wp_clear_scheduled_hook( 'burrow_system_stack_snapshot' );
 		wp_clear_scheduled_hook( 'burrow_outbox_cleanup' );
+		wp_clear_scheduled_hook( 'burrow_checkout_abandonment_scan' );
 	}
 }

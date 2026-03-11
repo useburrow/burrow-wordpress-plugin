@@ -85,5 +85,9 @@ class Burrow_Activator {
 		if ( ! wp_next_scheduled( 'burrow_outbox_cleanup' ) ) {
 			wp_schedule_event( time() + 1800, 'daily', 'burrow_outbox_cleanup' );
 		}
+
+		if ( ! wp_next_scheduled( 'burrow_checkout_abandonment_scan' ) ) {
+			wp_schedule_event( time() + 180, 'hourly', 'burrow_checkout_abandonment_scan' );
+		}
 	}
 }

@@ -59,9 +59,13 @@ class WpOptionsRepository {
 						'system'    => '',
 					),
 				),
-				'forms_contracts'     => array(),
-			'forms_contract_cache'=> array(),
-				'selected_forms'      => array(),
+			'capabilities'        => array(
+				'ecommerce_funnel' => false,
+			),
+			'checkout_sessions'   => array(),
+			'forms_contracts'     => array(),
+		'forms_contract_cache'=> array(),
+			'selected_forms'      => array(),
 				'contract_sync'       => array(
 					'version'  => '',
 					'hash'     => '',

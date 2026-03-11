@@ -191,15 +191,21 @@ class Burrow_Admin {
 			if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
 				$mode = 'track';
 			}
+			$funnel_enabled = ! empty( $_POST['ecommerce_funnel'] );
 			$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
 			if ( 'off' === $mode ) {
-				$selected = array_values( array_diff( $selected, array( 'woocommerce' ) ) );
+				$selected       = array_values( array_diff( $selected, array( 'woocommerce' ) ) );
+				$funnel_enabled = false;
 			} elseif ( ! in_array( 'woocommerce', $selected, true ) ) {
 				$selected[] = 'woocommerce';
 			}
 			$settings['onboarding']['selected_integrations'] = $selected;
 			$settings['onboarding']['woocommerce_mode']      = $mode;
 			$settings['onboarding']['woocommerce_confirmed'] = true;
+			if ( ! isset( $settings['capabilities'] ) || ! is_array( $settings['capabilities'] ) ) {
+				$settings['capabilities'] = array();
+			}
+			$settings['capabilities']['ecommerce_funnel'] = $funnel_enabled;
 			$this->options_repo->save_settings( $settings );
 			$message = 'off' === $mode
 				? __( 'WooCommerce tracking disabled.', 'burrow' )
@@ -688,7 +694,14 @@ class Burrow_Admin {
 							$badge_detail = '';
 							if ( 'woocommerce' === $integration_key ) {
 								$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
-								$badge_detail = 'track' === $woo_mode ? __( 'Orders + Items', 'burrow' ) : __( 'Off', 'burrow' );
+								$funnel_on = ! empty( $settings['capabilities']['ecommerce_funnel'] );
+								if ( 'track' !== $woo_mode ) {
+									$badge_detail = __( 'Off', 'burrow' );
+								} elseif ( $funnel_on ) {
+									$badge_detail = __( 'Orders + Items + Funnel', 'burrow' );
+								} else {
+									$badge_detail = __( 'Orders + Items', 'burrow' );
+								}
 							} else {
 								$count = 0;
 								foreach ( $contracts as $c ) {
@@ -1474,6 +1487,8 @@ class Burrow_Admin {
 		if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
 			$mode = 'track';
 		}
+		$caps           = isset( $settings['capabilities'] ) && is_array( $settings['capabilities'] ) ? $settings['capabilities'] : array();
+		$funnel_enabled = ! empty( $caps['ecommerce_funnel'] );
 		?>
 		<p><?php esc_html_e( 'Choose how WooCommerce should be handled for this project.', 'burrow' ); ?></p>
 		<form method="post">
@@ -1487,6 +1502,12 @@ class Burrow_Admin {
 				<label style="display:block;">
 					<input type="radio" name="woocommerce_mode" value="off" <?php checked( 'off', $mode ); ?> />
 					<?php esc_html_e( 'Do not track WooCommerce events', 'burrow' ); ?>
+				</label>
+			</fieldset>
+			<fieldset style="margin:0 0 16px 0;">
+				<label style="display:block;">
+					<input type="checkbox" name="ecommerce_funnel" value="1" <?php checked( $funnel_enabled ); ?> />
+					<?php esc_html_e( 'Enable cart & checkout funnel tracking (add-to-cart, checkout started, abandoned checkout, cart recovery)', 'burrow' ); ?>
 				</label>
 			</fieldset>
 			<?php submit_button( __( 'Save and Continue', 'burrow' ) ); ?>
@@ -2111,7 +2132,7 @@ class Burrow_Admin {
 			'platform'      => 'wordpress',
 			'pluginVersion' => BURROW_VERSION,
 			'site'          => array( 'url' => site_url(), 'cmsVersion' => get_bloginfo( 'version' ) ),
-			'capabilities'  => array( 'forms' => array_values( $this->detect_forms_capabilities() ), 'ecommerce' => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(), 'system' => true ),
+			'capabilities'  => array( 'forms' => array_values( $this->detect_forms_capabilities() ), 'ecommerce' => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(), 'ecommerce_funnel' => class_exists( 'WooCommerce' ), 'system' => true ),
 			'plugins'       => array_keys( $plugins ),
 		);
 	}

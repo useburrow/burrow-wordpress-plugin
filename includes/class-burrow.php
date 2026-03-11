@@ -105,6 +105,11 @@ class Burrow {
 		$this->loader->add_action( 'woocommerce_checkout_order_processed', $this, 'handle_woocommerce_order', 10, 1 );
 		$this->loader->add_action( 'woocommerce_payment_complete', $this, 'handle_woocommerce_order', 10, 1 );
 		$this->loader->add_action( 'woocommerce_order_status_changed', $this, 'handle_woocommerce_status_change', 10, 3 );
+
+		// Ecommerce funnel hooks (gated by capabilities.ecommerce_funnel at runtime).
+		$this->loader->add_action( 'woocommerce_add_to_cart', $this, 'handle_woocommerce_cart_item_added', 10, 6 );
+		$this->loader->add_action( 'woocommerce_cart_item_removed', $this, 'handle_woocommerce_cart_item_removed', 10, 2 );
+		$this->loader->add_action( 'woocommerce_checkout_init', $this, 'handle_woocommerce_checkout_started', 10, 1 );
 	}
 
 	private function define_worker_hooks() {
@@ -115,6 +120,7 @@ class Burrow {
 		$this->loader->add_action( 'burrow_outbox_cleanup', $this, 'cleanup_outbox' );
 		$this->loader->add_action( 'burrow_backfill_worker', $this, 'run_backfill_worker' );
 		$this->loader->add_action( 'burrow_invalidate_delivery', $this, 'invalidate_delivery_cache' );
+		$this->loader->add_action( 'burrow_checkout_abandonment_scan', $this, 'run_checkout_abandonment_scan' );
 	}
 
 	/**
@@ -163,6 +169,15 @@ class Burrow {
 		}
 		if ( ! wp_next_scheduled( 'burrow_outbox_cleanup' ) ) {
 			wp_schedule_event( time() + 1800, 'daily', 'burrow_outbox_cleanup' );
+		}
+
+		$settings = $this->options_repo->get_settings();
+		if ( $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			if ( ! wp_next_scheduled( 'burrow_checkout_abandonment_scan' ) ) {
+				wp_schedule_event( time() + 180, 'hourly', 'burrow_checkout_abandonment_scan' );
+			}
+		} else {
+			wp_clear_scheduled_hook( 'burrow_checkout_abandonment_scan' );
 		}
 	}
 
@@ -425,6 +440,13 @@ class Burrow {
 			}
 		}
 
+		if ( $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			$recovery_envelope = $this->maybe_build_cart_recovered_envelope( $order, $data, $customer_token, $settings, $routing_resolver );
+			if ( null !== $recovery_envelope ) {
+				$envelopes[] = $recovery_envelope;
+			}
+		}
+
 		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
 			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
 		);
@@ -432,6 +454,70 @@ class Burrow {
 			'provider'  => 'woocommerce',
 			'projectId' => $sdk->projectId ?? '',
 		) );
+	}
+
+	/**
+	 * Check if a completing order was previously abandoned and build a cart.recovered envelope.
+	 *
+	 * @param object                                $order            WC_Order.
+	 * @param array<string,mixed>                   $data             Normalized order data.
+	 * @param string                                $customer_token   Customer token.
+	 * @param array<string,mixed>                   $settings         Plugin settings.
+	 * @param \Burrow\Sdk\Events\ChannelRoutingResolver $routing_resolver Routing.
+	 * @return array<string,mixed>|null
+	 */
+	private function maybe_build_cart_recovered_envelope( $order, array $data, $customer_token, array $settings, $routing_resolver ) {
+		$emitted = get_option( 'burrow_abandoned_sessions', array() );
+		if ( ! is_array( $emitted ) || empty( $emitted ) ) {
+			return null;
+		}
+
+		$customer_id = (int) $order->get_customer_id();
+		$session_key = $customer_id > 0 ? (string) $customer_id : null;
+
+		if ( null === $session_key ) {
+			return null;
+		}
+
+		if ( ! isset( $emitted[ $session_key ] ) ) {
+			return null;
+		}
+
+		$abandoned_at = strtotime( (string) $emitted[ $session_key ] );
+		$now          = time();
+		$minutes      = $abandoned_at ? (int) floor( ( $now - $abandoned_at ) / 60 ) : 0;
+
+		$checkout_sessions = get_option( 'burrow_checkout_sessions', array() );
+		$original_cart_total = isset( $checkout_sessions[ $session_key ]['cartTotal'] )
+			? (float) $checkout_sessions[ $session_key ]['cartTotal']
+			: (float) $data['total'];
+
+		$input = array(
+			'organizationId'          => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'                 => (string) $data['orderId'],
+			'orderTotal'              => (float) $data['total'],
+			'originalCartTotal'       => $original_cart_total,
+			'minutesSinceAbandonment' => max( 0, $minutes ),
+			'currency'                => (string) $data['currency'],
+			'timestamp'               => gmdate( 'c' ),
+			'customerToken'           => $customer_token,
+			'tags'                    => array(
+				'provider' => 'woocommerce',
+				'currency' => (string) $data['currency'],
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartRecoveredEvent( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] cart.recovered build failed: ' . $e->getMessage() );
+			return null;
+		}
+
+		unset( $emitted[ $session_key ] );
+		update_option( 'burrow_abandoned_sessions', $emitted, false );
+
+		return $envelope;
 	}
 
 	/**
@@ -517,6 +603,396 @@ class Burrow {
 			: array();
 		$mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
 		return in_array( 'woocommerce', $selected, true ) && 'track' === $mode;
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function is_ecommerce_funnel_enabled( array $settings ) {
+		if ( ! $this->is_woo_tracking_enabled( $settings ) ) {
+			return false;
+		}
+		$caps = isset( $settings['capabilities'] ) && is_array( $settings['capabilities'] ) ? $settings['capabilities'] : array();
+		return ! empty( $caps['ecommerce_funnel'] );
+	}
+
+	// ────────────────────────────────────────────────────
+	// Ecommerce funnel event handlers
+	// ────────────────────────────────────────────────────
+
+	/**
+	 * Handle cart.item.added via woocommerce_add_to_cart hook.
+	 *
+	 * @param string $cart_item_key  Cart item key.
+	 * @param int    $product_id     Product ID.
+	 * @param int    $quantity       Quantity added.
+	 * @param int    $variation_id   Variation ID.
+	 * @param mixed  $variation      Variation data.
+	 * @param mixed  $cart_item_data Cart item data.
+	 */
+	public function handle_woocommerce_cart_item_added( $cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data ) {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$cart = function_exists( 'WC' ) && WC()->cart ? WC()->cart : null;
+		if ( ! $cart ) {
+			return;
+		}
+
+		$cart_item = $cart->get_cart_item( $cart_item_key );
+		if ( empty( $cart_item ) ) {
+			return;
+		}
+
+		$provider   = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$item_data  = $provider->normalize_cart_item( $cart_item_key, $cart_item );
+		$cart_state = $provider->get_cart_state();
+		$identity   = BurrowWP\Providers\Ecommerce\WooCommerceProvider::build_session_customer_identity();
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] cart.item.added skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		$input = array(
+			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'productId'      => (string) $item_data['productId'],
+			'productName'    => (string) $item_data['productName'],
+			'variantName'    => (string) $item_data['variantName'],
+			'quantity'       => (int) $item_data['quantity'],
+			'unitPrice'      => (float) $item_data['unitPrice'],
+			'lineTotal'      => (float) $item_data['lineTotal'],
+			'cartTotal'      => (float) $cart_state['cartTotal'],
+			'cartItemCount'  => (int) $cart_state['cartItemCount'],
+			'currency'       => (string) $cart_state['currency'],
+			'timestamp'      => gmdate( 'c' ),
+			'customerToken'  => $identity['customerToken'],
+			'tags'           => array(
+				'provider'    => 'woocommerce',
+				'currency'    => (string) $cart_state['currency'],
+				'productId'   => (string) $item_data['productId'],
+				'productName' => (string) $item_data['productName'],
+				'category'    => (string) $item_data['category'],
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartItemAddedEvent( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] cart.item.added build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( array( $envelope ), array(
+			'provider'  => 'woocommerce',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * Handle cart.item.removed via woocommerce_cart_item_removed hook.
+	 *
+	 * @param string $cart_item_key Cart item key that was removed.
+	 * @param object $cart          WC_Cart instance.
+	 */
+	public function handle_woocommerce_cart_item_removed( $cart_item_key, $cart ) {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$removed_item = isset( $cart->removed_cart_contents[ $cart_item_key ] ) ? $cart->removed_cart_contents[ $cart_item_key ] : null;
+		if ( empty( $removed_item ) ) {
+			return;
+		}
+
+		$product   = isset( $removed_item['data'] ) && is_object( $removed_item['data'] ) ? $removed_item['data'] : null;
+		$provider  = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$cart_state = $provider->get_cart_state();
+		$identity  = BurrowWP\Providers\Ecommerce\WooCommerceProvider::build_session_customer_identity();
+
+		$category = '';
+		if ( $product ) {
+			$terms = get_the_terms( $product->get_id(), 'product_cat' );
+			if ( is_array( $terms ) && ! empty( $terms ) ) {
+				$category = (string) $terms[0]->name;
+			}
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] cart.item.removed skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		$input = array(
+			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'productId'      => $product ? (string) $product->get_id() : '',
+			'productName'    => $product ? (string) $product->get_name() : '',
+			'quantity'       => isset( $removed_item['quantity'] ) ? (int) $removed_item['quantity'] : 1,
+			'cartTotal'      => (float) $cart_state['cartTotal'],
+			'cartItemCount'  => (int) $cart_state['cartItemCount'],
+			'currency'       => (string) $cart_state['currency'],
+			'timestamp'      => gmdate( 'c' ),
+			'customerToken'  => $identity['customerToken'],
+			'tags'           => array(
+				'provider'    => 'woocommerce',
+				'currency'    => (string) $cart_state['currency'],
+				'productId'   => $product ? (string) $product->get_id() : '',
+				'productName' => $product ? (string) $product->get_name() : '',
+				'category'    => $category,
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartItemRemovedEvent( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] cart.item.removed build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( array( $envelope ), array(
+			'provider'  => 'woocommerce',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * Handle checkout.started via woocommerce_checkout_init hook.
+	 * Emits once per WC session to avoid duplicate events on page reloads.
+	 *
+	 * @param mixed $checkout WC_Checkout instance.
+	 */
+	public function handle_woocommerce_checkout_started( $checkout ) {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$session = function_exists( 'WC' ) && WC()->session ? WC()->session : null;
+		if ( ! $session ) {
+			return;
+		}
+
+		$session_key = $session->get_customer_id();
+		if ( $session->get( 'burrow_checkout_started' ) ) {
+			return;
+		}
+		$session->set( 'burrow_checkout_started', gmdate( 'c' ) );
+
+		$provider   = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$cart_state = $provider->get_cart_state();
+		$identity   = BurrowWP\Providers\Ecommerce\WooCommerceProvider::build_session_customer_identity();
+
+		if ( $cart_state['cartItemCount'] <= 0 ) {
+			return;
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] checkout.started skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		$input = array(
+			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'cartTotal'      => (float) $cart_state['cartTotal'],
+			'cartItemCount'  => (int) $cart_state['cartItemCount'],
+			'currency'       => (string) $cart_state['currency'],
+			'timestamp'      => gmdate( 'c' ),
+			'customerToken'  => $identity['customerToken'],
+			'isGuest'        => $identity['isGuest'],
+			'tags'           => array(
+				'provider' => 'woocommerce',
+				'currency' => (string) $cart_state['currency'],
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCheckoutStartedEvent( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] checkout.started build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$this->record_checkout_session( $session_key, $cart_state, $identity );
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( array( $envelope ), array(
+			'provider'  => 'woocommerce',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * Record a checkout session for later abandonment scanning.
+	 *
+	 * @param string              $session_key Session key.
+	 * @param array<string,mixed> $cart_state  Cart state snapshot.
+	 * @param array<string,mixed> $identity    Customer identity.
+	 */
+	private function record_checkout_session( $session_key, array $cart_state, array $identity ) {
+		$sessions = get_option( 'burrow_checkout_sessions', array() );
+		if ( ! is_array( $sessions ) ) {
+			$sessions = array();
+		}
+		$sessions[ (string) $session_key ] = array(
+			'startedAt'     => gmdate( 'c' ),
+			'cartTotal'     => $cart_state['cartTotal'],
+			'cartItemCount' => $cart_state['cartItemCount'],
+			'currency'      => $cart_state['currency'],
+			'customerToken' => $identity['customerToken'],
+		);
+
+		$max_tracked = 500;
+		if ( count( $sessions ) > $max_tracked ) {
+			$sessions = array_slice( $sessions, -$max_tracked, null, true );
+		}
+		update_option( 'burrow_checkout_sessions', $sessions, false );
+	}
+
+	/**
+	 * WP-Cron: scan for abandoned checkouts and emit checkout.abandoned events.
+	 * Always queued (inherently async).
+	 */
+	public function run_checkout_abandonment_scan() {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$sessions = get_option( 'burrow_checkout_sessions', array() );
+		if ( ! is_array( $sessions ) || empty( $sessions ) ) {
+			return;
+		}
+
+		$emitted = get_option( 'burrow_abandoned_sessions', array() );
+		if ( ! is_array( $emitted ) ) {
+			$emitted = array();
+		}
+
+		$threshold_minutes = 60;
+		$now               = time();
+		$envelopes         = array();
+		$newly_emitted     = array();
+		$surviving         = array();
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] checkout.abandoned scan skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		foreach ( $sessions as $session_key => $session_data ) {
+			if ( ! is_array( $session_data ) || empty( $session_data['startedAt'] ) ) {
+				continue;
+			}
+
+			if ( isset( $emitted[ $session_key ] ) ) {
+				continue;
+			}
+
+			if ( $this->session_completed_order( $session_key ) ) {
+				continue;
+			}
+
+			$started_ts = strtotime( (string) $session_data['startedAt'] );
+			if ( false === $started_ts ) {
+				continue;
+			}
+
+			$minutes_since = (int) floor( ( $now - $started_ts ) / 60 );
+			if ( $minutes_since < $threshold_minutes ) {
+				$surviving[ $session_key ] = $session_data;
+				continue;
+			}
+
+			$external_entity_id = 'wc_session_' . $session_key;
+			$input = array(
+				'organizationId'      => (string) ( $settings['routing']['organizationId'] ?? '' ),
+				'cartTotal'           => (float) ( $session_data['cartTotal'] ?? 0 ),
+				'cartItemCount'       => (int) ( $session_data['cartItemCount'] ?? 0 ),
+				'currency'            => (string) ( $session_data['currency'] ?? '' ),
+				'minutesSinceCheckout'=> $minutes_since,
+				'externalEntityId'    => $external_entity_id,
+				'timestamp'           => gmdate( 'c' ),
+				'customerToken'       => (string) ( $session_data['customerToken'] ?? '' ),
+				'tags'                => array(
+					'provider' => 'woocommerce',
+					'currency' => (string) ( $session_data['currency'] ?? '' ),
+				),
+			);
+
+			try {
+				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCheckoutAbandonedEvent( $input, $routing_resolver );
+				$newly_emitted[ $session_key ] = gmdate( 'c' );
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow funnel] checkout.abandoned build failed for ' . $session_key . ': ' . $e->getMessage() );
+			}
+		}
+
+		if ( ! empty( $envelopes ) ) {
+			$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+			);
+			$this->sdk_enqueue_events( $envelopes, array(
+				'provider'  => 'woocommerce',
+				'projectId' => $sdk->projectId ?? '',
+			) );
+		}
+
+		if ( ! empty( $newly_emitted ) ) {
+			$emitted = array_merge( $emitted, $newly_emitted );
+			$max_ledger = 2000;
+			if ( count( $emitted ) > $max_ledger ) {
+				$emitted = array_slice( $emitted, -$max_ledger, null, true );
+			}
+			update_option( 'burrow_abandoned_sessions', $emitted, false );
+		}
+
+		update_option( 'burrow_checkout_sessions', $surviving, false );
+	}
+
+	/**
+	 * Check if a WC session resulted in a completed order.
+	 *
+	 * @param string $session_key WC session customer ID.
+	 * @return bool
+	 */
+	private function session_completed_order( $session_key ) {
+		if ( ! function_exists( 'wc_get_orders' ) ) {
+			return false;
+		}
+
+		$is_numeric_user = is_numeric( $session_key ) && (int) $session_key > 0;
+		if ( ! $is_numeric_user ) {
+			return false;
+		}
+
+		$orders = wc_get_orders( array(
+			'customer_id' => (int) $session_key,
+			'limit'       => 1,
+			'orderby'     => 'date',
+			'order'       => 'DESC',
+			'status'      => array( 'wc-processing', 'wc-completed', 'wc-on-hold' ),
+		) );
+
+		return ! empty( $orders );
 	}
 
 	/**
