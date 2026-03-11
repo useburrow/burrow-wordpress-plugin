@@ -1,0 +1,941 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR Burrow
+# This file is distributed under the same license as the Burrow package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Burrow 1.0.0\n"
+"Report-Msgid-Bugs-To: support@useburrow.com\n"
+"POT-Creation-Date: 2026-03-11 11:41-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: includes/class-burrow.php:130
+msgid "Every Minute"
+msgstr ""
+
+#: admin/class-burrow-admin.php:31 admin/class-burrow-admin.php:32
+msgid "Burrow"
+msgstr ""
+
+#: admin/class-burrow-admin.php:41
+msgid "Dashboard"
+msgstr ""
+
+#: admin/class-burrow-admin.php:42 admin/class-burrow-admin.php:44
+msgid "Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:47 admin/class-burrow-admin.php:649
+msgid "Outbox"
+msgstr ""
+
+#: admin/class-burrow-admin.php:94
+msgid "Action completed."
+msgstr ""
+
+#: admin/class-burrow-admin.php:113
+msgid "Connection failed."
+msgstr ""
+
+#: admin/class-burrow-admin.php:119
+msgid "Connected. Select a project to continue."
+msgstr ""
+
+#: admin/class-burrow-admin.php:128
+msgid "Please select a project."
+msgstr ""
+
+#: admin/class-burrow-admin.php:154
+msgid "Select at least one integration to continue."
+msgstr ""
+
+#: admin/class-burrow-admin.php:164
+msgid "Integrations selected."
+msgstr ""
+
+#: admin/class-burrow-admin.php:172
+msgid "Gravity Forms configuration saved."
+msgstr ""
+
+#: admin/class-burrow-admin.php:179
+msgid "Invalid provider selected."
+msgstr ""
+
+#: admin/class-burrow-admin.php:186
+#, php-format
+msgid "%s configuration saved."
+msgstr ""
+
+#: admin/class-burrow-admin.php:205
+msgid "WooCommerce tracking disabled."
+msgstr ""
+
+#: admin/class-burrow-admin.php:206
+msgid "WooCommerce tracking enabled."
+msgstr ""
+
+#: admin/class-burrow-admin.php:234
+msgid "Sync contracts to Burrow before starting backfill."
+msgstr ""
+
+#: admin/class-burrow-admin.php:247
+msgid "No configured forms or WooCommerce tracking found for backfill."
+msgstr ""
+
+#: admin/class-burrow-admin.php:278
+msgid "Backfill job queued."
+msgstr ""
+
+#: admin/class-burrow-admin.php:295
+msgid "Backfill resumed from current cursor."
+msgstr ""
+
+#: admin/class-burrow-admin.php:313
+msgid "Backfill restarted from beginning."
+msgstr ""
+
+#: admin/class-burrow-admin.php:330
+msgid "Contracts updated."
+msgstr ""
+
+#: admin/class-burrow-admin.php:351
+msgid "Failed event queued for replay."
+msgstr ""
+
+#: admin/class-burrow-admin.php:351
+msgid "Unable to replay event."
+msgstr ""
+
+#: admin/class-burrow-admin.php:361
+msgid "Event flushed for immediate delivery."
+msgstr ""
+
+#: admin/class-burrow-admin.php:361
+msgid "Unable to retry event."
+msgstr ""
+
+#: admin/class-burrow-admin.php:365
+msgid "Outbox record deleted."
+msgstr ""
+
+#: admin/class-burrow-admin.php:365
+msgid "Unable to delete record."
+msgstr ""
+
+#: admin/class-burrow-admin.php:373
+#, php-format
+msgid "Outbox retention updated to %d days."
+msgstr ""
+
+#: admin/class-burrow-admin.php:391
+msgid "Onboarding Wizard"
+msgstr ""
+
+#: admin/class-burrow-admin.php:497
+msgid "Step 1: Connect to Burrow"
+msgstr ""
+
+#: admin/class-burrow-admin.php:498
+msgid ""
+"Enter your Burrow base URL and API key so we can validate access and "
+"discover your available projects."
+msgstr ""
+
+#: admin/class-burrow-admin.php:500
+msgid "Step 2: Select Project"
+msgstr ""
+
+#: admin/class-burrow-admin.php:501
+msgid ""
+"Choose where events and contracts from this site should be routed in Burrow."
+msgstr ""
+
+#: admin/class-burrow-admin.php:503
+msgid "Step 3: Select Integrations"
+msgstr ""
+
+#: admin/class-burrow-admin.php:504
+msgid ""
+"Select the installed plugins you want to configure. You can enable one or "
+"many and continue through each setup step."
+msgstr ""
+
+#: admin/class-burrow-admin.php:506
+msgid "Gravity Forms Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:507
+msgid "Select the forms and fields you want to include in Burrow contracts."
+msgstr ""
+
+#: admin/class-burrow-admin.php:509
+msgid "Contact Form 7 Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:510
+msgid "Choose tracking mode for each Contact Form 7 form."
+msgstr ""
+
+#: admin/class-burrow-admin.php:512
+msgid "Ninja Forms Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:513
+msgid "Choose tracking mode for each Ninja Form."
+msgstr ""
+
+#: admin/class-burrow-admin.php:515
+msgid "Fluent Forms Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:516
+msgid "Choose tracking mode for each Fluent Form."
+msgstr ""
+
+#: admin/class-burrow-admin.php:518
+msgid "WooCommerce Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:520
+msgid "Finish"
+msgstr ""
+
+#: admin/class-burrow-admin.php:521
+msgid ""
+"Your setup is finalized. Optionally queue a historical backfill or head to "
+"the Dashboard."
+msgstr ""
+
+#: admin/class-burrow-admin.php:523
+msgid "Review & Finish"
+msgstr ""
+
+#: admin/class-burrow-admin.php:536
+msgid "Burrow Base URL"
+msgstr ""
+
+#: admin/class-burrow-admin.php:537
+msgid "API Key"
+msgstr ""
+
+#: admin/class-burrow-admin.php:537
+msgid "Find your API key here:"
+msgstr ""
+
+#: admin/class-burrow-admin.php:539
+msgid "Validate Connection & Continue"
+msgstr ""
+
+#: admin/class-burrow-admin.php:618
+msgid "Burrow Dashboard"
+msgstr ""
+
+#: admin/class-burrow-admin.php:637 admin/class-burrow-admin.php:1234
+msgid "Project"
+msgstr ""
+
+#: admin/class-burrow-admin.php:640 admin/class-burrow-admin.php:911
+msgid "View in Burrow &rarr;"
+msgstr ""
+
+#: admin/class-burrow-admin.php:644
+msgid "Ingestion Key"
+msgstr ""
+
+#: admin/class-burrow-admin.php:646
+msgid "Project-scoped"
+msgstr ""
+
+#: admin/class-burrow-admin.php:646
+msgid "Not yet linked"
+msgstr ""
+
+#: admin/class-burrow-admin.php:654
+#, php-format
+msgid "%d pending, %d failed, %d sent"
+msgstr ""
+
+#: admin/class-burrow-admin.php:660
+msgid "View"
+msgstr ""
+
+#: admin/class-burrow-admin.php:667
+msgid "Backfill"
+msgstr ""
+
+#: admin/class-burrow-admin.php:670 admin/class-burrow-admin.php:833
+#: admin/class-burrow-admin.php:991
+#, php-format
+msgid "%d events processed"
+msgstr ""
+
+#: admin/class-burrow-admin.php:677
+msgid "Active Integrations"
+msgstr ""
+
+#: admin/class-burrow-admin.php:679
+msgid "No integrations configured yet."
+msgstr ""
+
+#: admin/class-burrow-admin.php:680
+msgid "Run setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:691 admin/class-burrow-admin.php:929
+msgid "Orders + Items"
+msgstr ""
+
+#: admin/class-burrow-admin.php:691 admin/class-burrow-admin.php:929
+#: admin/class-burrow-admin.php:1408 admin/class-burrow-admin.php:1546
+#: admin/class-burrow-admin.php:1760 admin/class-burrow-admin.php:2577
+msgid "Off"
+msgstr ""
+
+#: admin/class-burrow-admin.php:699 admin/class-burrow-admin.php:937
+#, php-format
+msgid "%d form"
+msgid_plural "%d forms"
+msgstr[0] ""
+msgstr[1] ""
+
+#: admin/class-burrow-admin.php:714
+msgid "Form Contracts"
+msgstr ""
+
+#: admin/class-burrow-admin.php:718 admin/class-burrow-admin.php:960
+#: admin/class-burrow-admin.php:1724
+msgid "Provider"
+msgstr ""
+
+#: admin/class-burrow-admin.php:719 admin/class-burrow-admin.php:961
+#: admin/class-burrow-admin.php:1724
+msgid "Form"
+msgstr ""
+
+#: admin/class-burrow-admin.php:720 admin/class-burrow-admin.php:962
+#: admin/class-burrow-admin.php:1724
+msgid "Form ID"
+msgstr ""
+
+#: admin/class-burrow-admin.php:721 admin/class-burrow-admin.php:963
+#: admin/class-burrow-admin.php:1724
+msgid "Mode"
+msgstr ""
+
+#: admin/class-burrow-admin.php:722
+msgid "Icon"
+msgstr ""
+
+#: admin/class-burrow-admin.php:723
+msgid "Fields"
+msgstr ""
+
+#: admin/class-burrow-admin.php:724 admin/class-burrow-admin.php:1075
+msgid "Action"
+msgstr ""
+
+#: admin/class-burrow-admin.php:729
+msgid "No active contracts configured."
+msgstr ""
+
+#: admin/class-burrow-admin.php:737
+msgid "default"
+msgstr ""
+
+#: admin/class-burrow-admin.php:741
+msgid "Cancel"
+msgstr ""
+
+#: admin/class-burrow-admin.php:743
+msgid "Edit"
+msgstr ""
+
+#: admin/class-burrow-admin.php:758 admin/class-burrow-admin.php:986
+msgid "Data Backfill"
+msgstr ""
+
+#: admin/class-burrow-admin.php:764
+msgid "Settings"
+msgstr ""
+
+#: admin/class-burrow-admin.php:770
+msgid "Outbox retention"
+msgstr ""
+
+#: admin/class-burrow-admin.php:773
+msgid "days"
+msgstr ""
+
+#: admin/class-burrow-admin.php:774
+msgid ""
+"Sent and failed records are cleaned up daily after this retention window."
+msgstr ""
+
+#: admin/class-burrow-admin.php:778
+msgid "Save Settings"
+msgstr ""
+
+#: admin/class-burrow-admin.php:804
+#, php-format
+msgid "%d / %d sources processed, %d events sent"
+msgstr ""
+
+#: admin/class-burrow-admin.php:807
+#, php-format
+msgid "Last update: %s"
+msgstr ""
+
+#: admin/class-burrow-admin.php:821
+msgid "Resume"
+msgstr ""
+
+#: admin/class-burrow-admin.php:826
+msgid "Retry from Start"
+msgstr ""
+
+#: admin/class-burrow-admin.php:841
+msgid "Run Again"
+msgstr ""
+
+#: admin/class-burrow-admin.php:854 admin/class-burrow-admin.php:999
+msgid "Queue Backfill"
+msgstr ""
+
+#: admin/class-burrow-admin.php:895
+msgid "Burrow Setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:903
+msgid "Onboarding is complete. Your plugin is connected and configured."
+msgstr ""
+
+#: admin/class-burrow-admin.php:907
+msgid "Connected Project"
+msgstr ""
+
+#: admin/class-burrow-admin.php:916
+msgid "Base URL"
+msgstr ""
+
+#: admin/class-burrow-admin.php:920
+msgid "Integrations"
+msgstr ""
+
+#: admin/class-burrow-admin.php:923
+msgid "None"
+msgstr ""
+
+#: admin/class-burrow-admin.php:950
+msgid "Contracts Synced"
+msgstr ""
+
+#: admin/class-burrow-admin.php:956
+msgid "Active Contracts"
+msgstr ""
+
+#: admin/class-burrow-admin.php:964
+msgid "Mapped Fields"
+msgstr ""
+
+#: admin/class-burrow-admin.php:982
+msgid "WooCommerce"
+msgstr ""
+
+#: admin/class-burrow-admin.php:983
+msgid ""
+"Tracking order.placed and item.purchased events for all WooCommerce orders."
+msgstr ""
+
+#: admin/class-burrow-admin.php:994
+msgid "Manage backfill"
+msgstr ""
+
+#: admin/class-burrow-admin.php:997
+msgid ""
+"No backfill has been run yet. Import historical data into Burrow to start "
+"with a complete dataset."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1004 admin/class-burrow-admin.php:1794
+msgid "Go to Dashboard"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1005
+msgid "Reconfigure"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1034
+msgid "All"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1035
+msgid "Pending"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1036
+msgid "Retrying"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1037
+msgid "Failed"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1038
+msgid "Sent"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1043
+msgid "Burrow Outbox"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1045
+msgid ""
+"Outbox records for delivery debugging with status filters, search, and "
+"pagination."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1056
+msgid "Search outbox"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1057
+msgid "Search event, key, or error"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1058
+msgid "Search"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1060
+msgid "Clear"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1063
+#, php-format
+msgid "Showing %1$d-%2$d of %3$d records"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1067
+msgid "ID"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1068 admin/class-burrow-admin.php:1707
+msgid "Status"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1069
+msgid "Event"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1070
+msgid "Event key"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1071
+msgid "Attempts"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1072
+msgid "Next attempt"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1073
+msgid "Last error"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1074
+msgid "Updated"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1080
+msgid "No outbox records found for this filter."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1095
+msgid "View payload"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1104
+msgid "Re-queue for delivery"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1106
+msgid "Replay"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1113
+msgid "Delete record"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1113
+msgid "Delete this outbox record?"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1122
+msgid "Flush immediately"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1124
+msgid "Retry Now"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1164
+msgid "&laquo;"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1165
+msgid "&raquo;"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1220
+msgid "Back"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1227
+msgid "No projects returned yet. Complete Step 1 again to fetch projects."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1234
+msgid "Select"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1234
+msgid "Client"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1234
+msgid "Site"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1237
+msgid "Use Selected Project"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1304
+msgid "Enable"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1307 admin/class-burrow-admin.php:1707
+msgid "Integration"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1325
+msgid "Detected integrations are unchecked by default."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1326
+msgid "Continue"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1389
+msgid "No active Gravity Forms found."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1394
+msgid ""
+"Target guide: properties are event details (context), while tags are report-"
+"friendly dimensions used for filtering, grouping, or charting."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1397
+msgid ""
+"Tip: use \"Count-only tracking\" to send minimal events with formId, "
+"formName, submissionId, and timestamp even when no additional fields are "
+"selected."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1407 admin/class-burrow-admin.php:1545
+#: admin/class-burrow-admin.php:2575
+msgid "Tracking mode"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1409 admin/class-burrow-admin.php:1547
+#: admin/class-burrow-admin.php:1754 admin/class-burrow-admin.php:2578
+msgid "Count-only"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1410 admin/class-burrow-admin.php:1549
+#: admin/class-burrow-admin.php:1757 admin/class-burrow-admin.php:2580
+msgid "Custom fields"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1432
+msgid "Save Gravity Forms Settings"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1478
+msgid "Choose how WooCommerce should be handled for this project."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1485
+msgid "Track WooCommerce events"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1489
+msgid "Do not track WooCommerce events"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1492
+msgid "Save and Continue"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1503
+msgid "No active forms found for this provider."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1556 admin/class-burrow-admin.php:2595
+msgid "No fields were detected for this form."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1559 admin/class-burrow-admin.php:2599
+msgid "Include"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1559 admin/class-burrow-admin.php:2599
+msgid "Field"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1559 admin/class-burrow-admin.php:2599
+msgid "Type"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1559 admin/class-burrow-admin.php:2599
+msgid "Canonical Key"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1559 admin/class-burrow-admin.php:2599
+msgid "Target"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1588
+#, php-format
+msgid "Save %s Settings"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1652 admin/class-burrow-admin.php:1657
+#: admin/class-burrow-admin.php:1665
+msgid "Configured"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1659
+msgid "Configured (skipped)"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1661 admin/class-burrow-admin.php:1666
+msgid "Needs setup"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1689
+msgid "Review exactly what will be sent to Burrow when contracts are synced."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1693
+msgid ""
+"Icons are resolved automatically from Burrow defaults. If needed later, icon "
+"overrides use Lucide icon key names (for example <code>file-signature</"
+"code>, <code>shopping-cart</code>, <code>layers</code>). See <a "
+"href=\"https://lucide.dev/icons\" target=\"_blank\" rel=\"noopener "
+"noreferrer\">lucide.dev/icons</a>."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1705
+msgid "Integration Readiness"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1710
+msgid "No integrations selected."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1722
+msgid "Contracts To Sync"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1724
+msgid "Mapped fields"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1727
+msgid ""
+"No enabled contracts yet. Return to provider setup and enable at least one "
+"form."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1745
+msgid "Sync Contracts to Burrow"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1768
+msgid ""
+"Setup is complete. You can optionally queue a historical data backfill now, "
+"or do it later from the Dashboard."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1782
+msgid "Window"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1793
+msgid "Queue Backfill Now"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1825
+msgid "Backfill worker appears idle. Resume or retry to continue."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1846
+msgid "Backfill includes events for configured forms contracts."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1852
+msgid "WooCommerce order and line-item events are included in backfill."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1854
+msgid ""
+"WooCommerce is selected but tracking is off, so Woo events are skipped in "
+"backfill."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1860
+msgid "Contact Form 7 historical backfill is enabled via Flamingo submissions."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1865
+#, php-format
+msgid ""
+"Contact Form 7 does not store submissions by default. Install <a href=\"%s\" "
+"target=\"_blank\" rel=\"noopener noreferrer\">Flamingo</a> to include "
+"historical CF7 data."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1876
+msgid "Last 7 days"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1877
+msgid "Last 30 days"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1878
+msgid "Last 90 days"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1879
+msgid "Past Year"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1880
+msgid "Two Years"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1881
+msgid "All time"
+msgstr ""
+
+#: admin/class-burrow-admin.php:1910
+msgid "Invalid backfill window preset selected."
+msgstr ""
+
+#: admin/class-burrow-admin.php:1915
+msgid "Unable to resolve backfill window."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2002
+msgid "WP-Cron is disabled on this site."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2003
+msgid ""
+"Burrow relies on WP-Cron to dispatch queued events. Ensure a system cron "
+"(e.g. crontab) hits"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2005
+msgid ""
+"every 1–2 minutes, or events will remain pending until the next page load "
+"triggers cron."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2016
+msgid ""
+"Events are dispatched via WP-Cron every ~2 minutes. On low-traffic sites, "
+"visit any page to trigger cron, or configure a system cron for reliable "
+"scheduling."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2024
+msgid "Outbox events are flushed via WP-Cron every ~2 minutes."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2030
+#, php-format
+msgid "Next scheduled run in %s."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2035
+msgid "Next run is due now and will fire on the next page load."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2101
+msgid "Unknown"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2305
+msgid ""
+"Project linked response received, but projectId was missing. Please reselect "
+"and link the project."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2307
+msgid "Project linked successfully."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2313
+msgid ""
+"Project is not linked yet. Please complete Step 2: Select Project before "
+"syncing contracts."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2350
+msgid "Contracts synced to Burrow."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2568
+#, php-format
+msgid "Editing: %1$s - %2$s"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2585
+msgid "Icon override"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2588
+msgid "Optional Lucide icon key. Leave blank to use SDK default."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2629
+msgid "Save Contract Edits"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2630
+msgid "Save + Sync to Burrow"
+msgstr ""
+
+#: admin/class-burrow-admin.php:2742
+msgid "Selected contract could not be found."
+msgstr ""
+
+#: admin/class-burrow-admin.php:2760
+msgid ""
+"Invalid icon override. Use Lucide icon keys such as file-signature or "
+"shopping-cart."
+msgstr ""
