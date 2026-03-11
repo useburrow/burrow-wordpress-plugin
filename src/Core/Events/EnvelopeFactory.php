@@ -37,7 +37,7 @@ class EnvelopeFactory {
 			'channel'        => (string) $event['channel'],
 			'event'          => (string) $event['event'],
 			'timestamp'      => $timestamp,
-			'source'         => 'wordpress-plugin',
+			'source'         => $this->nullable_string( $event['source'] ?? 'wordpress-plugin' ),
 			'description'    => $this->nullable_string( $event['description'] ?? null ),
 			'schemaVersion'  => '1',
 			'properties'     => (array) ( $event['properties'] ?? array() ),

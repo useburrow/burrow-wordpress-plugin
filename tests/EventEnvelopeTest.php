@@ -69,4 +69,45 @@ class EventEnvelopeTest extends TestCase {
 
 		$this->assertSame( 'star', $payload['icon'] );
 	}
+
+	public function test_provider_specific_source_is_preserved_for_forms_and_ecommerce() {
+		$factory = new EnvelopeFactory();
+		$providers = array( 'gravity-forms', 'fluent-forms', 'contact-form-7', 'ninja-forms', 'woocommerce' );
+
+		foreach ( $providers as $provider ) {
+			$channel = 'woocommerce' === $provider ? 'ecommerce' : 'forms';
+			$event   = 'woocommerce' === $provider ? 'ecommerce.order.placed' : 'forms.submission.received';
+			$payload = $factory->build(
+				array(
+					'organizationId' => 'org_123',
+					'clientId'       => 'cli_123',
+				),
+				array(
+					'channel'   => $channel,
+					'event'     => $event,
+					'timestamp' => '2026-03-07T00:00:00.000Z',
+					'source'    => $provider,
+				)
+			);
+
+			$this->assertSame( $provider, $payload['source'] );
+		}
+	}
+
+	public function test_system_events_default_source_to_wordpress_plugin() {
+		$factory = new EnvelopeFactory();
+		$payload = $factory->build(
+			array(
+				'organizationId' => 'org_123',
+				'clientId'       => 'cli_123',
+			),
+			array(
+				'channel'   => 'system',
+				'event'     => 'system.heartbeat.ping',
+				'timestamp' => '2026-03-07T00:00:00.000Z',
+			)
+		);
+
+		$this->assertSame( 'wordpress-plugin', $payload['source'] );
+	}
 }

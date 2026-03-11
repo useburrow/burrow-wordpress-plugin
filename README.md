@@ -65,6 +65,17 @@ Activation migration creates `{prefix}burrow_outbox` with:
 - Ecommerce order: `ecommerce:order:<orderId>`
 - Ecommerce line item: `ecommerce:item:<orderId>:<lineItemId>`
 
+## Event Source Slugs
+
+Event `source` is provider-specific for forms/ecommerce and `wordpress-plugin` for system events.
+
+- `gravity-forms` -> Gravity Forms events
+- `fluent-forms` -> Fluent Forms events
+- `contact-form-7` -> Contact Form 7 events
+- `ninja-forms` -> Ninja Forms events
+- `woocommerce` -> WooCommerce order/item events
+- `wordpress-plugin` -> system heartbeat/stack events
+
 ## Admin Workflow
 
 1. Go to **Settings > Burrow**

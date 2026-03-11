@@ -211,6 +211,8 @@ class Burrow_Admin {
 						'perKeyConcurrency'  => 4,
 					);
 					$this->options_repo->save_settings( $settings );
+					// Emit a fresh stack snapshot at backfill start for baseline visibility.
+					do_action( 'burrow_system_stack_snapshot' );
 					// Kick off worker immediately for local/dev visibility,
 					// while cron remains the durable fallback path.
 					wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
@@ -463,7 +465,6 @@ class Burrow_Admin {
 		}
 		$status_counts = $this->outbox_repo->get_status_counts();
 		$event_counts  = $this->outbox_repo->get_event_counts();
-		$failed_rows   = $this->outbox_repo->get_failed_records( 100 );
 		$settings      = $this->options_repo->get_settings();
 		$retention_days = isset( $settings['outbox_retention_days'] ) ? max( 1, (int) $settings['outbox_retention_days'] ) : 30;
 		$labels        = $this->integration_labels();
@@ -481,6 +482,7 @@ class Burrow_Admin {
 				'mode'          => (string) ( $contract['mode'] ?? ( ! empty( $contract['countOnly'] ) ? 'count_only' : 'custom_fields' ) ),
 				'icon'          => (string) ( $contract['icon'] ?? '' ),
 				'mappingCount'  => is_array( $contract['fieldMappings'] ?? null ) ? count( $contract['fieldMappings'] ) : 0,
+				'editUrl'       => admin_url( 'admin.php?page=burrow-onboarding&step=' . rawurlencode( $this->edit_step_for_contract( $provider_key ) ) ),
 			);
 		}
 		?>
@@ -525,11 +527,12 @@ class Burrow_Admin {
 						<th><?php esc_html_e( 'Mode', 'burrow' ); ?></th>
 						<th><?php esc_html_e( 'Icon override', 'burrow' ); ?></th>
 						<th><?php esc_html_e( 'Mapped fields', 'burrow' ); ?></th>
+						<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
 					</tr>
 				</thead>
 				<tbody>
 					<?php if ( empty( $contract_rows ) ) : ?>
-						<tr><td colspan="6"><?php esc_html_e( 'No active contracts configured yet.', 'burrow' ); ?></td></tr>
+						<tr><td colspan="7"><?php esc_html_e( 'No active contracts configured yet.', 'burrow' ); ?></td></tr>
 					<?php else : ?>
 						<?php foreach ( $contract_rows as $row ) : ?>
 							<tr>
@@ -539,54 +542,24 @@ class Burrow_Admin {
 								<td><?php echo esc_html( $row['mode'] ); ?></td>
 								<td><?php echo '' !== $row['icon'] ? '<code>' . esc_html( $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'SDK default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
 								<td><?php echo esc_html( (string) $row['mappingCount'] ); ?></td>
+								<td><a class="button button-small" href="<?php echo esc_url( (string) $row['editUrl'] ); ?>"><?php esc_html_e( 'Edit', 'burrow' ); ?></a></td>
 							</tr>
 						<?php endforeach; ?>
 					<?php endif; ?>
 				</tbody>
 			</table>
-
-			<h2 style="margin-top:24px;"><?php esc_html_e( 'Failed Outbox Records', 'burrow' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'Most recent failed records. Replay will re-queue a failed record for delivery.', 'burrow' ); ?></p>
-			<table class="widefat striped" style="max-width:1400px;">
-				<thead>
-					<tr>
-						<th><?php esc_html_e( 'ID', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Event', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Event key', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Status', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Attempts', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Last error', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Updated', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php if ( empty( $failed_rows ) ) : ?>
-						<tr><td colspan="8"><?php esc_html_e( 'No failed records right now.', 'burrow' ); ?></td></tr>
-					<?php else : ?>
-						<?php foreach ( $failed_rows as $row ) : ?>
-							<tr>
-								<td><?php echo esc_html( (string) ( $row['id'] ?? '' ) ); ?></td>
-								<td><code><?php echo esc_html( (string) ( $row['event_name'] ?? '' ) ); ?></code></td>
-								<td><code><?php echo esc_html( (string) ( $row['event_key'] ?? '' ) ); ?></code></td>
-								<td><?php echo $this->render_status_badge( 'failed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
-								<td><?php echo esc_html( (string) ( (int) ( $row['attempt_count'] ?? 0 ) . ' / ' . (int) ( $row['max_attempts'] ?? 0 ) ) ); ?></td>
-								<td><?php echo esc_html( (string) ( $row['last_error'] ?? '' ) ); ?></td>
-								<td><?php echo esc_html( (string) ( $row['updated_at'] ?? '' ) ); ?></td>
-								<td>
-									<form method="post" style="margin:0;">
-										<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-										<input type="hidden" name="burrow_action" value="replay_failed" />
-										<input type="hidden" name="return_step" value="operations" />
-										<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) ( $row['id'] ?? 0 ) ); ?>" />
-										<?php submit_button( __( 'Replay', 'burrow' ), 'secondary small', '', false ); ?>
-									</form>
-								</td>
-							</tr>
-						<?php endforeach; ?>
-					<?php endif; ?>
-				</tbody>
-			</table>
+			<p class="description" style="margin-top:10px;">
+				<?php
+				printf(
+					/* translators: %s outbox page URL */
+					wp_kses(
+						__( 'Need record-level failures or replays? Use the dedicated <a href="%s">Outbox</a> page.', 'burrow' ),
+						array( 'a' => array( 'href' => array() ) )
+					),
+					esc_url( admin_url( 'admin.php?page=burrow-outbox&status=failed' ) )
+				);
+				?>
+			</p>
 		</div>
 		<?php
 	}
@@ -1289,7 +1262,7 @@ class Burrow_Admin {
 	}
 
 	private function render_backfill_step( array $settings ) {
-		$job          = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+		$job          = $this->refresh_backfill_job_state( $settings );
 		$status       = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
 		$preset       = isset( $job['windowPreset'] ) ? sanitize_key( (string) $job['windowPreset'] ) : 'last_30_days';
 		$preset_labels = $this->backfill_window_presets();
@@ -1324,6 +1297,9 @@ class Burrow_Admin {
 		<hr />
 		<h3><?php esc_html_e( 'Backfill Status', 'burrow' ); ?></h3>
 		<p><strong><?php esc_html_e( 'Status:', 'burrow' ); ?></strong> <?php echo esc_html( $status ); ?></p>
+		<?php if ( ! empty( $job['updatedAt'] ) ) : ?>
+			<p><strong><?php esc_html_e( 'Last updated:', 'burrow' ); ?></strong> <?php echo esc_html( (string) $job['updatedAt'] ); ?></p>
+		<?php endif; ?>
 		<p><strong><?php esc_html_e( 'Forms completed:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['completedForms'] ?? 0 ) ) ); ?> / <?php echo esc_html( (string) ( (int) ( $job['totalForms'] ?? 0 ) ) ); ?></p>
 		<p><strong><?php esc_html_e( 'Processed events:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['processedEvents'] ?? 0 ) ) ); ?></p>
 		<?php if ( ! empty( $job['lastError'] ) ) : ?>
@@ -1349,6 +1325,39 @@ class Burrow_Admin {
 			</form>
 		<?php endif; ?>
 		<?php
+	}
+
+	/**
+	 * Detect stale queued/running backfill jobs and mark as failed for clearer UX.
+	 *
+	 * @param array<string,mixed> $settings Settings.
+	 * @return array<string,mixed>
+	 */
+	private function refresh_backfill_job_state( array $settings ) {
+		$job    = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+		$status = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
+		if ( ! in_array( $status, array( 'queued', 'running' ), true ) ) {
+			return $job;
+		}
+
+		$updated_at = isset( $job['updatedAt'] ) ? strtotime( (string) $job['updatedAt'] ) : false;
+		$age_sec    = false === $updated_at ? 0 : ( time() - (int) $updated_at );
+		$is_stale   = $age_sec > 600;
+		$scheduled  = wp_next_scheduled( 'burrow_backfill_worker' );
+
+		if ( ! $is_stale && false !== $scheduled ) {
+			return $job;
+		}
+
+		$job['status']    = 'failed';
+		$job['updatedAt'] = gmdate( 'c' );
+		if ( empty( $job['lastError'] ) ) {
+			$job['lastError'] = __( 'Backfill worker appears idle. Resume or retry to continue.', 'burrow' );
+		}
+		$settings['backfill'] = $job;
+		$this->options_repo->save_settings( $settings );
+
+		return $job;
 	}
 
 	/**
@@ -1938,6 +1947,20 @@ class Burrow_Admin {
 			}
 		}
 		return $keys;
+	}
+
+	/**
+	 * Map contract provider to onboarding step slug for editing.
+	 *
+	 * @param string $provider_key Provider key.
+	 * @return string
+	 */
+	private function edit_step_for_contract( $provider_key ) {
+		$provider_key = sanitize_key( (string) $provider_key );
+		if ( in_array( $provider_key, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' ), true ) ) {
+			return $provider_key;
+		}
+		return 'review';
 	}
 
 	/**

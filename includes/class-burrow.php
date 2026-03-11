@@ -260,6 +260,7 @@ class Burrow {
 				'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
 				'channel'         => 'ecommerce',
 				'event'           => 'ecommerce.order.placed',
+				'source'          => $this->event_source_for_provider( 'woocommerce' ),
 				'description'     => 'Order placed',
 				'timestamp'       => $submitted_at,
 				'properties'      => array(
@@ -298,6 +299,7 @@ class Burrow {
 					'externalEventId' => $item_event_key,
 					'channel'         => 'ecommerce',
 					'event'           => 'ecommerce.item.purchased',
+					'source'          => $this->event_source_for_provider( 'woocommerce' ),
 					'description'     => 'Order item purchased',
 					'timestamp'       => $submitted_at,
 					'properties'      => array(
@@ -390,6 +392,7 @@ class Burrow {
 				'externalEventId' => $this->event_keys->forms_submission_key( (string) $payload['formId'], (string) $payload['submissionId'] ),
 				'channel'         => 'forms',
 				'event'           => 'forms.submission.received',
+				'source'          => $this->event_source_for_provider( (string) $payload['provider'] ),
 				'description'     => 'Form submission received',
 				'timestamp'       => $this->resolve_iso8601( $payload['submittedAt'] ?? null ),
 				'properties'      => $props,
@@ -711,6 +714,7 @@ class Burrow {
 		}
 		$mapped_fields = isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
 		$count_only    = ! empty( $contract['countOnly'] );
+		$has_explicit_count_only_setting = array_key_exists( 'countOnly', $contract );
 		$form_source   = '' !== $routed_source ? $routed_source : $routed_default;
 		$events        = array();
 		foreach ( $entries as $entry ) {
@@ -718,6 +722,11 @@ class Burrow {
 			$submission_id = isset( $entry['submissionId'] ) ? (string) $entry['submissionId'] : (string) ( $entry['id'] ?? '' );
 			$submitted_at  = $this->resolve_submission_timestamp( $entry );
 			$mapped     = $this->contract_mapper->map( $raw_values, $mapped_fields );
+			$has_mapped_fields = ! empty( $mapped['tags'] ) || ! empty( $mapped['properties'] );
+			if ( ! $count_only && ! $has_mapped_fields && $has_explicit_count_only_setting ) {
+				// Mirror realtime behavior: explicit non-count contracts require selected mapped fields.
+				continue;
+			}
 			$tags       = array( 'formId' => (string) ( $contract['formHandle'] ?? $form_id ) );
 			$props      = array(
 				'formName'     => $form_name,
@@ -739,6 +748,7 @@ class Burrow {
 					'externalEventId' => $this->event_keys->forms_submission_key( (string) $form_id, $submission_id ),
 					'channel'         => 'forms',
 					'event'           => 'forms.submission.received',
+					'source'          => $this->event_source_for_provider( $provider ),
 					'description'     => 'Backfilled form submission',
 					'timestamp'       => $submitted_at,
 					'properties'      => $props,
@@ -798,6 +808,7 @@ class Burrow {
 					'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
 					'channel'         => 'ecommerce',
 					'event'           => 'ecommerce.order.placed',
+					'source'          => $this->event_source_for_provider( 'woocommerce' ),
 					'description'     => 'Backfilled order placed',
 					'timestamp'       => $submitted_at,
 					'properties'      => array(
@@ -827,6 +838,7 @@ class Burrow {
 						'externalEventId' => $item_event_key,
 						'channel'         => 'ecommerce',
 						'event'           => 'ecommerce.item.purchased',
+						'source'          => $this->event_source_for_provider( 'woocommerce' ),
 						'description'     => 'Backfilled order item purchased',
 						'timestamp'       => $submitted_at,
 						'properties'      => array(
@@ -1191,6 +1203,24 @@ class Burrow {
 			return null;
 		}
 		return gmdate( 'c', $ts );
+	}
+
+	/**
+	 * Resolve canonical source slug by provider/integration.
+	 *
+	 * @param string $provider Provider key.
+	 * @return string
+	 */
+	private function event_source_for_provider( $provider ) {
+		$provider = sanitize_key( (string) $provider );
+		$allowed  = array(
+			'gravity-forms',
+			'fluent-forms',
+			'contact-form-7',
+			'ninja-forms',
+			'woocommerce',
+		);
+		return in_array( $provider, $allowed, true ) ? $provider : 'wordpress-plugin';
 	}
 
 	/**
