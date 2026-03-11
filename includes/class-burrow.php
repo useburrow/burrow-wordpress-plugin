@@ -715,7 +715,10 @@ class Burrow {
 			return;
 		}
 
-		$product   = isset( $removed_item['data'] ) && is_object( $removed_item['data'] ) ? $removed_item['data'] : null;
+		$product = isset( $removed_item['data'] ) && is_object( $removed_item['data'] ) ? $removed_item['data'] : null;
+		if ( ! $product || ! method_exists( $product, 'get_id' ) ) {
+			return;
+		}
 		$provider  = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
 		$cart_state = $provider->get_cart_state();
 		$identity  = BurrowWP\Providers\Ecommerce\WooCommerceProvider::build_session_customer_identity();

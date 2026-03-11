@@ -391,8 +391,17 @@ class Burrow_Admin {
 			$retention_days = isset( $_POST['outbox_retention_days'] ) ? (int) $_POST['outbox_retention_days'] : 30;
 			$retention_days = max( 1, min( 365, $retention_days ) );
 			$settings['outbox_retention_days'] = $retention_days;
+
+			$woo_selected = in_array( 'woocommerce', (array) ( $settings['onboarding']['selected_integrations'] ?? array() ), true );
+			if ( $woo_selected ) {
+				if ( ! isset( $settings['capabilities'] ) || ! is_array( $settings['capabilities'] ) ) {
+					$settings['capabilities'] = array();
+				}
+				$settings['capabilities']['ecommerce_funnel'] = ! empty( $_POST['ecommerce_funnel'] );
+			}
+
 			$this->options_repo->save_settings( $settings );
-			$message = sprintf( __( 'Outbox retention updated to %d days.', 'burrow' ), $retention_days );
+			$message = __( 'Settings saved.', 'burrow' );
 		}
 
 		$this->redirect_with_notice( $step, $message );
@@ -602,6 +611,8 @@ class Burrow_Admin {
 		}
 		$labels        = $this->integration_labels();
 		$selected      = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$woo_active    = in_array( 'woocommerce', $selected, true );
+		$funnel_enabled = ! empty( $settings['capabilities']['ecommerce_funnel'] );
 		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 
 		$contract_rows = array();
@@ -803,6 +814,17 @@ class Burrow_Admin {
 								<p class="description"><?php esc_html_e( 'Sent and failed records are cleaned up daily after this retention window.', 'burrow' ); ?></p>
 							</td>
 						</tr>
+						<?php if ( $woo_active ) : ?>
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Cart & checkout funnel', 'burrow' ); ?></th>
+							<td>
+								<label>
+									<input type="checkbox" name="ecommerce_funnel" value="1" <?php checked( $funnel_enabled ); ?> />
+									<?php esc_html_e( 'Track add-to-cart, checkout started, abandoned checkout, and cart recovery events', 'burrow' ); ?>
+								</label>
+							</td>
+						</tr>
+						<?php endif; ?>
 					</table>
 					<?php submit_button( __( 'Save Settings', 'burrow' ), 'secondary', 'submit', false ); ?>
 				</form>

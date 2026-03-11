@@ -80,11 +80,28 @@ class WooCommerceProvider implements EcommerceProviderInterface {
 			}
 		}
 
+		$variant_name = '';
+		if ( $product && method_exists( $product, 'get_attribute_summary' ) ) {
+			$variant_name = trim( (string) $product->get_attribute_summary() );
+		}
+		if ( '' === $variant_name && $product && method_exists( $product, 'get_sku' ) ) {
+			$sku = trim( (string) $product->get_sku() );
+			if ( '' !== $sku ) {
+				$variant_name = $sku;
+			}
+		}
+		if ( '' === $variant_name && $product ) {
+			$variant_name = trim( (string) $product->get_name() );
+		}
+		if ( '' === $variant_name ) {
+			$variant_name = 'default';
+		}
+
 		return array(
 			'cartItemKey' => (string) $cart_item_key,
 			'productId'   => $product ? (string) $product->get_id() : '',
 			'productName' => $product ? (string) $product->get_name() : '',
-			'variantName' => ( $product && method_exists( $product, 'get_attribute_summary' ) ) ? (string) $product->get_attribute_summary() : '',
+			'variantName' => $variant_name,
 			'quantity'    => $quantity,
 			'unitPrice'   => $unit_price,
 			'lineTotal'   => $unit_price * $quantity,
