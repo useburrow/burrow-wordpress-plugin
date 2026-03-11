@@ -590,8 +590,11 @@ class Burrow {
 		);
 		$routing = (array) $settings['routing'];
 		$source  = $sdk->formsProjectSourceId ?? ( $routing['projectSourceId'] ?? '' );
+		$provider_key   = (string) $payload['provider'];
+		$raw_form_id    = (string) ( $contract['externalFormId'] ?? $payload['formId'] );
+		$scoped_form_id = $this->prefixed_form_id( $provider_key, $raw_form_id );
 		$tags    = array_merge(
-			array( 'formId' => (string) ( $contract['formHandle'] ?? $payload['formId'] ) ),
+			array( 'formId' => $scoped_form_id ),
 			(array) $mapped['tags']
 		);
 		$props   = array_merge(
@@ -611,7 +614,7 @@ class Burrow {
 				'icon'            => $this->resolve_event_icon( 'forms', 'forms.submission.received', $contract ),
 				'entityType'      => 'form_submission',
 				'externalEntityId'=> (string) $payload['submissionId'],
-				'externalEventId' => sprintf( 'forms:%s:%s', (string) $payload['formId'], (string) $payload['submissionId'] ),
+				'externalEventId' => sprintf( 'forms:%s:%s', $scoped_form_id, (string) $payload['submissionId'] ),
 				'submissionId'    => (string) $payload['submissionId'],
 				'channel'         => 'forms',
 				'event'           => 'forms.submission.received',
@@ -1014,18 +1017,19 @@ class Burrow {
 		}
 		$contract = $contracts[ $contract_key ];
 		$provider = isset( $contract['provider'] ) ? (string) $contract['provider'] : '';
-		$form_id  = isset( $contract['externalFormId'] ) ? (string) $contract['externalFormId'] : '';
-		$form_name = isset( $contract['formName'] ) ? (string) $contract['formName'] : $form_id;
+		$scoped_form_id = isset( $contract['externalFormId'] ) ? (string) $contract['externalFormId'] : '';
+		$wp_form_id     = self::raw_form_id( $provider, $scoped_form_id );
+		$form_name = isset( $contract['formName'] ) ? (string) $contract['formName'] : $scoped_form_id;
 		$entries  = array();
 		$warning  = '';
 		if ( 'gravity-forms' === $provider ) {
-			$entries = $this->get_gravity_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit );
+			$entries = $this->get_gravity_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} elseif ( 'ninja-forms' === $provider ) {
-			$entries = $this->get_ninja_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit );
+			$entries = $this->get_ninja_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} elseif ( 'fluent-forms' === $provider ) {
-			$entries = $this->get_fluent_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit );
+			$entries = $this->get_fluent_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} elseif ( 'contact-form-7' === $provider ) {
-			$result  = $this->get_cf7_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit );
+			$result  = $this->get_cf7_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 			$entries = isset( $result['entries'] ) && is_array( $result['entries'] ) ? $result['entries'] : array();
 			$warning = isset( $result['warning'] ) ? (string) $result['warning'] : '';
 		} else {
@@ -1049,7 +1053,7 @@ class Burrow {
 				// Mirror realtime behavior: explicit non-count contracts require selected mapped fields.
 				continue;
 			}
-			$tags       = array( 'formId' => (string) ( $contract['formHandle'] ?? $form_id ) );
+			$tags       = array( 'formId' => $scoped_form_id );
 			$props      = array(
 				'formName'     => $form_name,
 				'submissionId' => $submission_id,
@@ -1067,7 +1071,7 @@ class Burrow {
 					'icon'            => $this->resolve_event_icon( 'forms', 'forms.submission.received', $contract ),
 					'entityType'      => 'form_submission',
 					'externalEntityId'=> $submission_id,
-					'externalEventId' => sprintf( 'forms:%s:%s', (string) $form_id, $submission_id ),
+					'externalEventId' => sprintf( 'forms:%s:%s', $scoped_form_id, $submission_id ),
 					'submissionId'    => $submission_id,
 					'channel'         => 'forms',
 					'event'           => 'forms.submission.received',
@@ -1509,6 +1513,44 @@ class Burrow {
 			'provider' => (string) $provider,
 			'channel'  => (string) $channel,
 		) );
+	}
+
+	private static $form_id_prefixes = array(
+		'gravity-forms'    => 'gf_',
+		'fluent-forms'     => 'flf_',
+		'contact-form-7'   => 'cf7_',
+		'ninja-forms'      => 'nf_',
+		'wpforms'          => 'wpf_',
+		'formidable-forms' => 'frm_',
+	);
+
+	/**
+	 * Build a provider-prefixed form ID for use in event tags, contracts, and idempotency keys.
+	 * Ensures uniqueness across form plugins that may share numeric IDs.
+	 *
+	 * @param string $provider   Provider key (e.g. 'gravity-forms').
+	 * @param string $raw_id     Raw numeric form ID.
+	 * @return string            Prefixed form ID (e.g. 'gf_42').
+	 */
+	public static function prefixed_form_id( $provider, $raw_id ) {
+		$prefix = isset( self::$form_id_prefixes[ $provider ] ) ? self::$form_id_prefixes[ $provider ] : '';
+		return $prefix . (string) $raw_id;
+	}
+
+	/**
+	 * Strip the provider prefix from a scoped form ID to recover the raw numeric ID
+	 * needed for WordPress form-plugin API calls.
+	 *
+	 * @param string $provider     Provider key (e.g. 'gravity-forms').
+	 * @param string $scoped_id    Prefixed form ID (e.g. 'gf_42').
+	 * @return string              Raw numeric form ID (e.g. '42').
+	 */
+	public static function raw_form_id( $provider, $scoped_id ) {
+		$prefix = isset( self::$form_id_prefixes[ $provider ] ) ? self::$form_id_prefixes[ $provider ] : '';
+		if ( '' !== $prefix && 0 === strpos( (string) $scoped_id, $prefix ) ) {
+			return substr( (string) $scoped_id, strlen( $prefix ) );
+		}
+		return (string) $scoped_id;
 	}
 
 	/**

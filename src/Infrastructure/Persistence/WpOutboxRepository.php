@@ -46,10 +46,15 @@ class WpOutboxRepository implements OutboxStoreInterface {
 			return new OutboxEnqueueResult( deduped: true, eventKey: $eventKey );
 		}
 
+		$channel    = isset( $payload['channel'] ) ? substr( trim( (string) $payload['channel'] ), 0, 32 ) : '';
+		$event_name = isset( $payload['event'] ) ? substr( trim( (string) $payload['event'] ), 0, 128 ) : '';
+
 		$wpdb->insert(
 			$this->table_name,
 			array(
 				'event_key'       => $eventKey,
+				'channel'         => $channel,
+				'event_name'      => $event_name,
 				'payload_json'    => $json,
 				'status'          => OutboxStatus::PENDING,
 				'attempt_count'   => 0,
@@ -58,7 +63,7 @@ class WpOutboxRepository implements OutboxStoreInterface {
 				'created_at'      => $now,
 				'updated_at'      => $now,
 			),
-			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s' )
 		);
 
 		return new OutboxEnqueueResult( deduped: false, eventKey: $eventKey );
@@ -214,6 +219,42 @@ class WpOutboxRepository implements OutboxStoreInterface {
 		);
 	}
 
+	/**
+	 * Force a pending or retrying record to be eligible for the next flush.
+	 *
+	 * @param int $id Record ID.
+	 * @return bool
+	 */
+	public function retry_now( $id ) {
+		global $wpdb;
+		$now = current_time( 'mysql', true );
+		return false !== $wpdb->update(
+			$this->table_name,
+			array(
+				'next_attempt_at' => $now,
+				'updated_at'      => $now,
+			),
+			array( 'id' => (int) $id ),
+			array( '%s', '%s' ),
+			array( '%d' )
+		);
+	}
+
+	/**
+	 * Delete a single outbox record.
+	 *
+	 * @param int $id Record ID.
+	 * @return bool
+	 */
+	public function delete_record( $id ) {
+		global $wpdb;
+		return false !== $wpdb->delete(
+			$this->table_name,
+			array( 'id' => (int) $id ),
+			array( '%d' )
+		);
+	}
+
 	public function cleanup( $days = 14 ) {
 		global $wpdb;
 		$days = max( 1, (int) $days );
@@ -274,7 +315,7 @@ class WpOutboxRepository implements OutboxStoreInterface {
 		}
 
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$sql = "SELECT id, event_key, channel, event_name, status, attempt_count, max_attempts, last_error, next_attempt_at, created_at, updated_at, sent_at
+		$sql = "SELECT id, event_key, channel, event_name, payload_json, status, attempt_count, max_attempts, last_error, next_attempt_at, created_at, updated_at, sent_at
 			FROM {$this->table_name}
 			{$where_sql}
 			ORDER BY id DESC

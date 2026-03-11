@@ -353,6 +353,17 @@ class Burrow_Admin {
 			if ( ! in_array( $step, array( 'dashboard', 'outbox' ), true ) ) {
 				$step = 'dashboard';
 			}
+		} elseif ( 'retry_now' === $action ) {
+			$ok      = $this->outbox_repo->retry_now( (int) ( $_POST['outbox_id'] ?? 0 ) );
+			if ( $ok ) {
+				do_action( 'burrow_outbox_worker' );
+			}
+			$message = $ok ? __( 'Event flushed for immediate delivery.', 'burrow' ) : __( 'Unable to retry event.', 'burrow' );
+			$step    = 'outbox';
+		} elseif ( 'delete_outbox_record' === $action ) {
+			$ok      = $this->outbox_repo->delete_record( (int) ( $_POST['outbox_id'] ?? 0 ) );
+			$message = $ok ? __( 'Outbox record deleted.', 'burrow' ) : __( 'Unable to delete record.', 'burrow' );
+			$step    = 'outbox';
 		} elseif ( 'save_operations_settings' === $action ) {
 			$step = 'dashboard';
 			$retention_days = isset( $_POST['outbox_retention_days'] ) ? (int) $_POST['outbox_retention_days'] : 30;
@@ -997,13 +1008,13 @@ class Burrow_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
-		$status = isset( $_GET['status'] ) ? sanitize_key( (string) wp_unslash( $_GET['status'] ) ) : 'failed';
+		$status = isset( $_GET['status'] ) ? sanitize_key( (string) wp_unslash( $_GET['status'] ) ) : 'all';
 		$search = isset( $_GET['q'] ) ? sanitize_text_field( (string) wp_unslash( $_GET['q'] ) ) : '';
 		$paged  = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
 		$per_page = 50;
 		$allowed = array( 'all', 'pending', 'retrying', 'sent', 'failed' );
 		if ( ! in_array( $status, $allowed, true ) ) {
-			$status = 'failed';
+			$status = 'all';
 		}
 		$query_status = 'all' === $status ? '' : $status;
 		$offset       = ( $paged - 1 ) * $per_page;
@@ -1064,28 +1075,67 @@ class Burrow_Admin {
 					<?php if ( empty( $rows ) ) : ?>
 						<tr><td colspan="9"><?php esc_html_e( 'No outbox records found for this filter.', 'burrow' ); ?></td></tr>
 					<?php else : ?>
-						<?php foreach ( $rows as $row ) : ?>
+						<?php foreach ( $rows as $idx => $row ) : ?>
+							<?php $row_id = (int) ( $row['id'] ?? 0 ); ?>
 							<tr>
-								<td><?php echo esc_html( (string) ( $row['id'] ?? '' ) ); ?></td>
+								<td><?php echo esc_html( (string) $row_id ); ?></td>
 								<td><?php echo $this->render_status_badge( (string) ( $row['status'] ?? '' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
 								<td><code><?php echo esc_html( (string) ( $row['event_name'] ?? '' ) ); ?></code></td>
-								<td><code><?php echo esc_html( (string) ( $row['event_key'] ?? '' ) ); ?></code></td>
+								<td><code style="font-size:11px;"><?php echo esc_html( (string) ( $row['event_key'] ?? '' ) ); ?></code></td>
 								<td><?php echo esc_html( (string) ( (int) ( $row['attempt_count'] ?? 0 ) . ' / ' . (int) ( $row['max_attempts'] ?? 0 ) ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $row['next_attempt_at'] ?? '' ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $row['last_error'] ?? '' ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $row['updated_at'] ?? '' ) ); ?></td>
-								<td>
-									<?php if ( 'failed' === ( $row['status'] ?? '' ) ) : ?>
-										<form method="post" style="margin:0;">
+								<td style="white-space:nowrap;">
+									<?php $row_status = (string) ( $row['status'] ?? '' ); ?>
+									<a href="#" class="burrow-toggle-payload" data-target="burrow-payload-<?php echo esc_attr( (string) $row_id ); ?>" title="<?php esc_attr_e( 'View payload', 'burrow' ); ?>" style="text-decoration:none;margin-right:4px;">
+										<span class="dashicons dashicons-visibility" style="font-size:16px;width:16px;height:16px;vertical-align:middle;"></span>
+									</a>
+									<?php if ( 'failed' === $row_status ) : ?>
+										<form method="post" style="margin:0;display:inline;">
 											<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
 											<input type="hidden" name="burrow_action" value="replay_failed" />
 											<input type="hidden" name="return_step" value="outbox" />
-											<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) ( $row['id'] ?? 0 ) ); ?>" />
-											<?php submit_button( __( 'Replay', 'burrow' ), 'secondary small', '', false ); ?>
+											<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) $row_id ); ?>" />
+											<button type="submit" class="button button-small" title="<?php esc_attr_e( 'Re-queue for delivery', 'burrow' ); ?>">
+												<span class="dashicons dashicons-controls-repeat" style="font-size:14px;width:14px;height:14px;vertical-align:middle;"></span>
+												<?php esc_html_e( 'Replay', 'burrow' ); ?>
+											</button>
 										</form>
-									<?php else : ?>
-										<span class="description">&mdash;</span>
+										<form method="post" style="margin:0;display:inline;">
+											<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+											<input type="hidden" name="burrow_action" value="delete_outbox_record" />
+											<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) $row_id ); ?>" />
+											<button type="submit" class="button button-small button-link-delete" title="<?php esc_attr_e( 'Delete record', 'burrow' ); ?>" onclick="return confirm('<?php esc_attr_e( 'Delete this outbox record?', 'burrow' ); ?>');">
+												<span class="dashicons dashicons-trash" style="font-size:14px;width:14px;height:14px;vertical-align:middle;"></span>
+											</button>
+										</form>
+									<?php elseif ( in_array( $row_status, array( 'pending', 'retrying' ), true ) ) : ?>
+										<form method="post" style="margin:0;display:inline;">
+											<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+											<input type="hidden" name="burrow_action" value="retry_now" />
+											<input type="hidden" name="outbox_id" value="<?php echo esc_attr( (string) $row_id ); ?>" />
+											<button type="submit" class="button button-small" title="<?php esc_attr_e( 'Flush immediately', 'burrow' ); ?>">
+												<span class="dashicons dashicons-update" style="font-size:14px;width:14px;height:14px;vertical-align:middle;"></span>
+												<?php esc_html_e( 'Retry Now', 'burrow' ); ?>
+											</button>
+										</form>
 									<?php endif; ?>
+								</td>
+							</tr>
+							<tr id="burrow-payload-<?php echo esc_attr( (string) $row_id ); ?>" style="display:none;">
+								<td colspan="9" style="padding:0;">
+									<div style="background:#1e1e2e;border-top:2px solid #45475a;padding:12px 16px;max-height:400px;overflow:auto;border-radius:0 0 4px 4px;">
+										<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.6;color:#cdd6f4;font-family:'SF Mono','Fira Code','JetBrains Mono',Menlo,Consolas,monospace;"><?php
+											$raw = isset( $row['payload_json'] ) ? (string) $row['payload_json'] : '{}';
+											$decoded = json_decode( $raw, true );
+											if ( is_array( $decoded ) ) {
+												echo esc_html( (string) wp_json_encode( $decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+											} else {
+												echo esc_html( $raw );
+											}
+										?></pre>
+									</div>
 								</td>
 							</tr>
 						<?php endforeach; ?>
@@ -1115,6 +1165,19 @@ class Burrow_Admin {
 				?>
 				<div class="tablenav"><div class="tablenav-pages"><?php echo wp_kses_post( $pagination ); ?></div></div>
 			<?php endif; ?>
+			<script>
+			(function(){
+				document.querySelectorAll('.burrow-toggle-payload').forEach(function(link){
+					link.addEventListener('click',function(e){
+						e.preventDefault();
+						var target = document.getElementById(this.getAttribute('data-target'));
+						if(target){
+							target.style.display = target.style.display === 'none' ? 'table-row' : 'none';
+						}
+					});
+				});
+			})();
+			</script>
 		</div>
 		<?php
 	}
@@ -2115,12 +2178,13 @@ class Burrow_Admin {
 				continue;
 			}
 			$form_id                = sanitize_text_field( (string) $id );
+			$prefixed_id            = \Burrow::prefixed_form_id( 'gravity-forms', $form_id );
 			$contract_key           = 'gravity-forms:' . $form_id;
 			$current_contract       = isset( $existing[ $contract_key ] ) && is_array( $existing[ $contract_key ] ) ? $existing[ $contract_key ] : array();
 			$icon_override          = isset( $form['icon'] ) ? sanitize_text_field( (string) $form['icon'] ) : (string) ( $current_contract['icon'] ?? '' );
 			$contracts[ 'gravity-forms:' . $form_id ] = array(
 				'provider'       => 'gravity-forms',
-				'externalFormId' => $form_id,
+				'externalFormId' => $prefixed_id,
 				'formHandle'     => sanitize_title( (string) ( $form['formName'] ?? '' ) ),
 				'formName'       => sanitize_text_field( (string) ( $form['formName'] ?? '' ) ),
 				'enabled'        => true,
@@ -2181,12 +2245,13 @@ class Burrow_Admin {
 				}
 			}
 			$form_id = sanitize_text_field( (string) $id );
+			$prefixed_id = \Burrow::prefixed_form_id( $provider, $form_id );
 			$contract_key = $prefix . $form_id;
 			$current_contract = isset( $existing[ $contract_key ] ) && is_array( $existing[ $contract_key ] ) ? $existing[ $contract_key ] : array();
 			$icon_override = isset( $form['icon'] ) ? sanitize_text_field( (string) $form['icon'] ) : (string) ( $current_contract['icon'] ?? '' );
 			$contracts[ $prefix . $form_id ] = array(
 				'provider'       => $provider,
-				'externalFormId' => $form_id,
+				'externalFormId' => $prefixed_id,
 				'formHandle'     => sanitize_title( (string) ( $form['formName'] ?? '' ) ),
 				'formName'       => sanitize_text_field( (string) ( $form['formName'] ?? '' ) ),
 				'enabled'        => true,
@@ -2588,18 +2653,18 @@ class Burrow_Admin {
 
 	private function operations_provider_fields( $provider_key, $form_id, array $contract ) {
 		$provider_key = sanitize_key( (string) $provider_key );
-		$form_id      = (string) $form_id;
+		$wp_form_id   = \Burrow::raw_form_id( $provider_key, (string) $form_id );
 		if ( 'gravity-forms' === $provider_key ) {
-			return $this->list_gravity_form_fields( $form_id );
+			return $this->list_gravity_form_fields( $wp_form_id );
 		}
 		if ( 'contact-form-7' === $provider_key ) {
-			return $this->list_contact_form_7_fields( $form_id );
+			return $this->list_contact_form_7_fields( $wp_form_id );
 		}
 		if ( 'ninja-forms' === $provider_key ) {
-			return $this->list_ninja_form_fields( $form_id );
+			return $this->list_ninja_form_fields( $wp_form_id );
 		}
 		if ( 'fluent-forms' === $provider_key ) {
-			return $this->list_fluent_form_fields( $form_id );
+			return $this->list_fluent_form_fields( $wp_form_id );
 		}
 		return isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
 	}
