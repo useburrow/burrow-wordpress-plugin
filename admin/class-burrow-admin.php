@@ -253,6 +253,35 @@ class Burrow_Admin {
 			wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
 			do_action( 'burrow_backfill_worker' );
 			$message = __( 'Backfill restarted from beginning.', 'burrow' );
+		} elseif ( 'save_operations_contract' === $action ) {
+			$step            = 'operations';
+			$posted_contract = isset( $_POST['operations_contract'] ) ? wp_unslash( $_POST['operations_contract'] ) : array();
+			$contract_key    = sanitize_text_field( (string) wp_unslash( $_POST['operations_contract_key'] ?? '' ) );
+			$error_message   = '';
+			$settings        = $this->apply_operations_contract_edit(
+				$settings,
+				$contract_key,
+				is_array( $posted_contract ) ? $posted_contract : array(),
+				$error_message
+			);
+			$this->options_repo->save_settings( $settings );
+
+			if ( '' !== $error_message ) {
+				$message = $error_message;
+			} else {
+				$message = __( 'Contracts updated.', 'burrow' );
+				$should_sync = isset( $_POST['sync_contracts'] ) && '1' === (string) $_POST['sync_contracts'];
+				if ( $should_sync ) {
+					$routing_error = $this->validate_routing_before_contract_sync( $settings );
+					if ( '' !== $routing_error ) {
+						$message = $routing_error;
+					} else {
+						$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'] );
+						$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
+						$message = $this->persist_contract_response( $res );
+					}
+				}
+			}
 		} elseif ( 'replay_failed' === $action ) {
 			$ok      = $this->outbox_repo->replay_failed( (int) ( $_POST['outbox_id'] ?? 0 ) );
 			$message = $ok ? __( 'Failed event queued for replay.', 'burrow' ) : __( 'Unable to replay event.', 'burrow' );
@@ -463,41 +492,42 @@ class Burrow_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
-		$status_counts = $this->outbox_repo->get_status_counts();
-		$event_counts  = $this->outbox_repo->get_event_counts();
 		$settings      = $this->options_repo->get_settings();
 		$retention_days = isset( $settings['outbox_retention_days'] ) ? max( 1, (int) $settings['outbox_retention_days'] ) : 30;
 		$labels        = $this->integration_labels();
 		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 		$contract_rows = array();
-		foreach ( $contracts as $contract ) {
+		foreach ( $contracts as $key => $contract ) {
 			if ( ! is_array( $contract ) || empty( $contract['enabled'] ) ) {
 				continue;
 			}
+			$contract_key = (string) $key;
 			$provider_key = (string) ( $contract['provider'] ?? '' );
-			$contract_rows[] = array(
+			$field_mappings = isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
+			$contract_rows[ $contract_key ] = array(
+				'contractKey'   => $contract_key,
+				'providerKey'   => $provider_key,
 				'provider'      => (string) ( $labels[ $provider_key ] ?? $provider_key ),
 				'formName'      => (string) ( $contract['formName'] ?? '' ),
 				'externalFormId'=> (string) ( $contract['externalFormId'] ?? '' ),
 				'mode'          => (string) ( $contract['mode'] ?? ( ! empty( $contract['countOnly'] ) ? 'count_only' : 'custom_fields' ) ),
 				'icon'          => (string) ( $contract['icon'] ?? '' ),
-				'mappingCount'  => is_array( $contract['fieldMappings'] ?? null ) ? count( $contract['fieldMappings'] ) : 0,
-				'editUrl'       => admin_url( 'admin.php?page=burrow-onboarding&step=' . rawurlencode( $this->edit_step_for_contract( $provider_key ) ) ),
+				'mappingCount'  => count( $field_mappings ),
+				'contract'      => $contract,
 			);
 		}
+		$edit_contract_key = isset( $_GET['edit_contract'] ) ? sanitize_text_field( (string) wp_unslash( $_GET['edit_contract'] ) ) : '';
+		if ( '' !== $edit_contract_key && ! isset( $contract_rows[ $edit_contract_key ] ) ) {
+			$edit_contract_key = '';
+		}
+		$editing_row = '' !== $edit_contract_key ? $contract_rows[ $edit_contract_key ] : null;
 		?>
 		<div class="wrap">
 			<?php $this->render_admin_notice_from_query(); ?>
 			<?php $this->render_burrow_page_header( __( 'Burrow Operations', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
 			<p><strong><?php esc_html_e( 'Connected project:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( $settings['routing']['projectId'] ?? '' ) ); ?></p>
-			<p>
-				<strong><?php esc_html_e( 'Queue status:', 'burrow' ); ?></strong>
-				<?php echo $this->render_status_badge( 'pending', (int) $status_counts['pending'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-				<?php echo $this->render_status_badge( 'retrying', (int) $status_counts['retrying'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-				<?php echo $this->render_status_badge( 'failed', (int) $status_counts['failed'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-			</p>
-			<p><?php printf( esc_html__( 'Woo pending order events: %1$d | Woo pending item events: %2$d', 'burrow' ), (int) ( $event_counts['ecommerce.order.placed'] ?? 0 ), (int) ( $event_counts['ecommerce.item.purchased'] ?? 0 ) ); ?></p>
+			<p class="description"><?php esc_html_e( 'Queue metrics and delivery details live in the dedicated Outbox view.', 'burrow' ); ?></p>
 
 			<h2 style="margin-top:20px;"><?php esc_html_e( 'Outbox Settings', 'burrow' ); ?></h2>
 			<form method="post" style="max-width:560px;">
@@ -517,7 +547,7 @@ class Burrow_Admin {
 			</form>
 
 			<h2 style="margin-top:20px;"><?php esc_html_e( 'Active Form Contracts', 'burrow' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'These are the currently enabled contracts in plugin settings. Sync Contracts pushes these to Burrow.', 'burrow' ); ?></p>
+			<p class="description"><?php esc_html_e( 'Select one contract to edit. This mirrors onboarding-style mapping controls without leaving Operations.', 'burrow' ); ?></p>
 			<table class="widefat striped" style="max-width:1200px;">
 				<thead>
 					<tr>
@@ -539,15 +569,26 @@ class Burrow_Admin {
 								<td><?php echo esc_html( $row['provider'] ); ?></td>
 								<td><?php echo esc_html( $row['formName'] ); ?></td>
 								<td><?php echo esc_html( $row['externalFormId'] ); ?></td>
-								<td><?php echo esc_html( $row['mode'] ); ?></td>
-								<td><?php echo '' !== $row['icon'] ? '<code>' . esc_html( $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'SDK default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
-								<td><?php echo esc_html( (string) $row['mappingCount'] ); ?></td>
-								<td><a class="button button-small" href="<?php echo esc_url( (string) $row['editUrl'] ); ?>"><?php esc_html_e( 'Edit', 'burrow' ); ?></a></td>
+								<td><?php echo esc_html( $this->format_tracking_mode_label( (string) $row['mode'] ) ); ?></td>
+								<td><?php echo '' !== (string) $row['icon'] ? '<code>' . esc_html( (string) $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'SDK default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
+								<td><?php echo esc_html( (string) (int) $row['mappingCount'] ); ?></td>
+								<td>
+									<?php if ( $edit_contract_key === (string) $row['contractKey'] ) : ?>
+										<a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-operations' ) ); ?>"><?php esc_html_e( 'Cancel', 'burrow' ); ?></a>
+									<?php else : ?>
+										<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'burrow-operations', 'edit_contract' => rawurlencode( (string) $row['contractKey'] ) ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Edit', 'burrow' ); ?></a>
+									<?php endif; ?>
+								</td>
 							</tr>
 						<?php endforeach; ?>
 					<?php endif; ?>
 				</tbody>
 			</table>
+
+			<?php if ( is_array( $editing_row ) ) : ?>
+				<?php $this->render_operations_contract_editor( $editing_row ); ?>
+			<?php endif; ?>
+
 			<p class="description" style="margin-top:10px;">
 				<?php
 				printf(
@@ -1949,18 +1990,258 @@ class Burrow_Admin {
 		return $keys;
 	}
 
-	/**
-	 * Map contract provider to onboarding step slug for editing.
-	 *
-	 * @param string $provider_key Provider key.
-	 * @return string
-	 */
-	private function edit_step_for_contract( $provider_key ) {
+	private function render_operations_contract_editor( array $row ) {
+		$contract        = isset( $row['contract'] ) && is_array( $row['contract'] ) ? $row['contract'] : array();
+		$contract_key    = (string) ( $row['contractKey'] ?? '' );
+		$provider_key    = (string) ( $row['providerKey'] ?? '' );
+		$form_id         = (string) ( $row['externalFormId'] ?? '' );
+		$form_name       = (string) ( $row['formName'] ?? $form_id );
+		$current_mode    = (string) ( $row['mode'] ?? 'count_only' );
+		$current_icon    = (string) ( $row['icon'] ?? '' );
+		$supports_custom = $this->operations_provider_supports_custom_fields( $provider_key );
+		$fields          = $this->operations_provider_fields( $provider_key, $form_id, $contract );
+		$mapped_lookup   = $this->operations_mapped_lookup(
+			isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array()
+		);
+		$editor_id       = 'burrow-ops-contract-editor';
+		?>
+		<hr />
+		<h3><?php echo esc_html( sprintf( __( 'Editing: %1$s - %2$s', 'burrow' ), (string) ( $row['provider'] ?? $provider_key ), $form_name ) ); ?></h3>
+		<form id="<?php echo esc_attr( $editor_id ); ?>" method="post" style="max-width:1300px;">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="save_operations_contract" />
+			<input type="hidden" name="operations_contract_key" value="<?php echo esc_attr( $contract_key ); ?>" />
+			<table class="form-table" role="presentation">
+				<tr>
+					<th><?php esc_html_e( 'Tracking mode', 'burrow' ); ?></th>
+					<td>
+						<label style="margin-right:14px;"><input class="burrow-ops-mode-radio" type="radio" name="operations_contract[mode]" value="off" <?php checked( 'off', $current_mode ); ?> /> <?php esc_html_e( 'Off', 'burrow' ); ?></label>
+						<label style="margin-right:14px;"><input class="burrow-ops-mode-radio" type="radio" name="operations_contract[mode]" value="count_only" <?php checked( 'count_only', $current_mode ); ?> /> <?php esc_html_e( 'Count-only', 'burrow' ); ?></label>
+						<?php if ( $supports_custom ) : ?>
+							<label><input class="burrow-ops-mode-radio" type="radio" name="operations_contract[mode]" value="custom_fields" <?php checked( 'custom_fields', $current_mode ); ?> /> <?php esc_html_e( 'Custom fields', 'burrow' ); ?></label>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<th><label for="burrow-ops-contract-icon"><?php esc_html_e( 'Icon override', 'burrow' ); ?></label></th>
+					<td>
+						<input id="burrow-ops-contract-icon" type="text" class="regular-text" name="operations_contract[icon]" value="<?php echo esc_attr( $current_icon ); ?>" placeholder="file-signature" />
+						<p class="description"><?php esc_html_e( 'Optional Lucide icon key. Leave blank to use SDK default.', 'burrow' ); ?></p>
+					</td>
+				</tr>
+			</table>
+
+			<?php if ( $supports_custom ) : ?>
+				<?php if ( empty( $fields ) ) : ?>
+					<p class="description"><?php esc_html_e( 'No fields were detected for this form.', 'burrow' ); ?></p>
+				<?php else : ?>
+					<table class="widefat striped burrow-ops-mapping-table">
+						<thead>
+							<tr><th><?php esc_html_e( 'Include', 'burrow' ); ?></th><th><?php esc_html_e( 'Field', 'burrow' ); ?></th><th><?php esc_html_e( 'Type', 'burrow' ); ?></th><th><?php esc_html_e( 'Canonical Key', 'burrow' ); ?></th><th><?php esc_html_e( 'Target', 'burrow' ); ?></th></tr>
+						</thead>
+						<tbody>
+						<?php foreach ( $fields as $field ) : ?>
+							<?php
+							$field_id   = (string) ( $field['id'] ?? '' );
+							$field_name = (string) ( $field['name'] ?? $field_id );
+							$field_type = (string) ( $field['type'] ?? 'text' );
+							$existing   = isset( $mapped_lookup[ $field_id ] ) ? $mapped_lookup[ $field_id ] : array();
+							$checked    = ! empty( $existing );
+							$target     = isset( $existing['target'] ) && 'tags' === (string) $existing['target'] ? 'tags' : 'properties';
+							$canonical  = isset( $existing['canonicalKey'] ) ? (string) $existing['canonicalKey'] : $this->label_to_canonical_key( $field_name );
+							?>
+							<tr>
+								<td><input class="burrow-ops-field-checkbox" type="checkbox" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][include]" value="1" <?php checked( $checked ); ?> /></td>
+								<td><?php echo esc_html( $field_name ); ?></td>
+								<td><?php echo esc_html( $field_type ); ?></td>
+								<td><input type="text" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $canonical ); ?>" /></td>
+								<td><select name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][target]"><option value="properties" <?php selected( 'properties', $target ); ?>>properties</option><option value="tags" <?php selected( 'tags', $target ); ?>>tags</option></select></td>
+							</tr>
+							<input type="hidden" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_id ); ?>" />
+							<input type="hidden" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][sourceLabel]" value="<?php echo esc_attr( $field_name ); ?>" />
+							<input type="hidden" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][dataType]" value="<?php echo esc_attr( $field_type ); ?>" />
+						<?php endforeach; ?>
+						</tbody>
+					</table>
+				<?php endif; ?>
+			<?php endif; ?>
+
+			<p style="margin-top:10px;">
+				<button type="submit" class="button button-secondary"><?php esc_html_e( 'Save Contract Edits', 'burrow' ); ?></button>
+				<button type="submit" class="button button-primary" name="sync_contracts" value="1"><?php esc_html_e( 'Save + Sync to Burrow', 'burrow' ); ?></button>
+			</p>
+		</form>
+		<?php if ( $supports_custom ) : ?>
+			<script>
+				(function () {
+					const root = document.getElementById('<?php echo esc_js( $editor_id ); ?>');
+					if (!root) return;
+					const modeInputs = Array.from(root.querySelectorAll('.burrow-ops-mode-radio'));
+					const mappingTable = root.querySelector('.burrow-ops-mapping-table');
+					if (!mappingTable) return;
+					const fields = Array.from(mappingTable.querySelectorAll('.burrow-ops-field-checkbox'));
+					const controls = Array.from(mappingTable.querySelectorAll('input, select, textarea'));
+					if (!modeInputs.length || !controls.length) return;
+					const currentMode = () => {
+						const picked = modeInputs.find((input) => input.checked);
+						return picked ? picked.value : 'off';
+					};
+					const sync = () => {
+						const mode = currentMode();
+						const enabled = mode === 'custom_fields';
+						if (!enabled) {
+							fields.forEach((field) => { field.checked = false; });
+						}
+						controls.forEach((control) => {
+							if (!enabled) {
+								control.setAttribute('disabled', 'disabled');
+							} else {
+								control.removeAttribute('disabled');
+							}
+						});
+					};
+					modeInputs.forEach((input) => input.addEventListener('change', sync));
+					sync();
+				})();
+			</script>
+		<?php endif; ?>
+		<?php
+	}
+
+	private function operations_provider_supports_custom_fields( $provider_key ) {
+		return in_array( sanitize_key( (string) $provider_key ), array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true );
+	}
+
+	private function operations_provider_fields( $provider_key, $form_id, array $contract ) {
 		$provider_key = sanitize_key( (string) $provider_key );
-		if ( in_array( $provider_key, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' ), true ) ) {
-			return $provider_key;
+		$form_id      = (string) $form_id;
+		if ( 'gravity-forms' === $provider_key ) {
+			return $this->list_gravity_form_fields( $form_id );
 		}
-		return 'review';
+		if ( 'contact-form-7' === $provider_key ) {
+			return $this->list_contact_form_7_fields( $form_id );
+		}
+		if ( 'ninja-forms' === $provider_key ) {
+			return $this->list_ninja_form_fields( $form_id );
+		}
+		if ( 'fluent-forms' === $provider_key ) {
+			return $this->list_fluent_form_fields( $form_id );
+		}
+		return isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
+	}
+
+	private function list_gravity_form_fields( $form_id ) {
+		$form_id = (string) $form_id;
+		if ( '' === $form_id ) {
+			return array();
+		}
+		$forms = $this->list_gravity_forms();
+		foreach ( $forms as $form ) {
+			if ( ! is_array( $form ) || (string) ( $form['id'] ?? '' ) !== $form_id ) {
+				continue;
+			}
+			$fields = array();
+			foreach ( (array) ( $form['fields'] ?? array() ) as $field ) {
+				if ( ! is_object( $field ) || empty( $field->id ) ) {
+					continue;
+				}
+				$fields[] = array(
+					'id'   => (string) $field->id,
+					'name' => (string) ( $field->label ?? ( 'Field ' . $field->id ) ),
+					'type' => (string) ( $field->type ?? 'text' ),
+				);
+			}
+			return $fields;
+		}
+		return array();
+	}
+
+	private function operations_mapped_lookup( array $mappings ) {
+		$lookup = array();
+		foreach ( $mappings as $mapping ) {
+			if ( ! is_array( $mapping ) || empty( $mapping['externalFieldId'] ) ) {
+				continue;
+			}
+			$lookup[ (string) $mapping['externalFieldId'] ] = $mapping;
+		}
+		return $lookup;
+	}
+
+	private function apply_operations_contract_edit( array $settings, $contract_key, array $posted_contract, &$error_message ) {
+		$contracts      = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		$contract_key   = sanitize_text_field( (string) $contract_key );
+		$allowed_modes  = array( 'off', 'count_only', 'custom_fields' );
+		$error_message  = '';
+
+		if ( '' === $contract_key || ! isset( $contracts[ $contract_key ] ) || ! is_array( $contracts[ $contract_key ] ) ) {
+			$error_message = __( 'Selected contract could not be found.', 'burrow' );
+			return $settings;
+		}
+
+		$mode = sanitize_key( (string) ( $posted_contract['mode'] ?? '' ) );
+		if ( ! in_array( $mode, $allowed_modes, true ) ) {
+			$mode = isset( $contracts[ $contract_key ]['mode'] ) ? sanitize_key( (string) $contracts[ $contract_key ]['mode'] ) : 'count_only';
+		}
+
+		if ( 'off' === $mode ) {
+			unset( $contracts[ $contract_key ] );
+			$settings['forms_contracts'] = $contracts;
+			return $settings;
+		}
+
+		$icon_raw = sanitize_text_field( (string) ( $posted_contract['icon'] ?? '' ) );
+		$icon     = $this->sanitize_lucide_icon_key( $icon_raw );
+		if ( '' !== $icon_raw && '' === $icon ) {
+			$error_message = __( 'Invalid icon override. Use Lucide icon keys such as file-signature or shopping-cart.', 'burrow' );
+			return $settings;
+		}
+
+		$provider = sanitize_key( (string) ( $contracts[ $contract_key ]['provider'] ?? '' ) );
+		$mappings = array();
+		if ( 'custom_fields' === $mode && $this->operations_provider_supports_custom_fields( $provider ) ) {
+			$posted_fields = isset( $posted_contract['fields'] ) && is_array( $posted_contract['fields'] ) ? $posted_contract['fields'] : array();
+			$mappings      = $this->extract_operations_field_mappings( $posted_fields );
+		}
+
+		$contracts[ $contract_key ]['enabled']       = true;
+		$contracts[ $contract_key ]['countOnly']     = 'custom_fields' !== $mode;
+		$contracts[ $contract_key ]['mode']          = $mode;
+		$contracts[ $contract_key ]['fieldMappings'] = $mappings;
+		$contracts[ $contract_key ]['icon']          = '' !== $icon ? $icon : null;
+
+		$settings['forms_contracts'] = $contracts;
+		return $settings;
+	}
+
+	private function extract_operations_field_mappings( array $posted_fields ) {
+		$mappings = array();
+		foreach ( $posted_fields as $field_id => $posted ) {
+			if ( ! is_array( $posted ) || empty( $posted['include'] ) ) {
+				continue;
+			}
+			$external_field_id = sanitize_text_field( (string) ( $posted['externalFieldId'] ?? $field_id ) );
+			$canonical_key     = sanitize_text_field( (string) ( $posted['canonicalKey'] ?? '' ) );
+			if ( '' === $external_field_id || '' === $canonical_key ) {
+				continue;
+			}
+			$target = isset( $posted['target'] ) && 'tags' === (string) $posted['target'] ? 'tags' : 'properties';
+			$mappings[] = array(
+				'externalFieldId' => $external_field_id,
+				'sourceLabel'     => sanitize_text_field( (string) ( $posted['sourceLabel'] ?? $external_field_id ) ),
+				'canonicalKey'    => $canonical_key,
+				'target'          => $target,
+				'dataType'        => sanitize_text_field( (string) ( $posted['dataType'] ?? 'string' ) ),
+			);
+		}
+		return $mappings;
+	}
+
+	private function sanitize_lucide_icon_key( $value ) {
+		$icon = strtolower( trim( (string) $value ) );
+		if ( '' === $icon ) {
+			return '';
+		}
+		return 1 === preg_match( '/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $icon ) ? $icon : '';
 	}
 
 	/**
