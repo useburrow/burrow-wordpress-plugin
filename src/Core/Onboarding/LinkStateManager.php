@@ -70,6 +70,8 @@ class LinkStateManager {
 			$settings['routing']['projectId'] = (string) $settings['ingestion_key']['projectId'];
 		}
 
+		self::provision_missing_source_ids( $settings );
+
 		return $settings;
 	}
 
@@ -115,6 +117,26 @@ class LinkStateManager {
 
 		$valid = filter_var( $url, FILTER_VALIDATE_URL );
 		return false === $valid ? '' : (string) $valid;
+	}
+
+	/**
+	 * Auto-fill sourceIds channels that are still empty using projectSourceId as fallback.
+	 *
+	 * @param array<string,mixed> $settings Settings (passed by reference).
+	 */
+	private static function provision_missing_source_ids( array &$settings ) {
+		$fallback = isset( $settings['routing']['projectSourceId'] ) ? trim( (string) $settings['routing']['projectSourceId'] ) : '';
+		if ( '' === $fallback ) {
+			return;
+		}
+		if ( ! isset( $settings['routing']['sourceIds'] ) || ! is_array( $settings['routing']['sourceIds'] ) ) {
+			$settings['routing']['sourceIds'] = array();
+		}
+		foreach ( array( 'forms', 'ecommerce', 'system' ) as $channel ) {
+			if ( empty( $settings['routing']['sourceIds'][ $channel ] ) ) {
+				$settings['routing']['sourceIds'][ $channel ] = $fallback;
+			}
+		}
 	}
 
 	/**

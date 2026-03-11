@@ -738,7 +738,7 @@ class Burrow_Admin {
 			</div>
 
 			<!-- Backfill -->
-			<div class="burrow-section">
+			<div id="backfill" class="burrow-section">
 				<h2><?php esc_html_e( 'Data Backfill', 'burrow' ); ?></h2>
 				<?php $this->render_dashboard_backfill_section( $settings, $job, $bf_status ); ?>
 			</div>
@@ -849,23 +849,52 @@ class Burrow_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
-		$settings = $this->options_repo->get_settings();
-		$labels   = $this->integration_labels();
-		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
-		$contracts = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		$settings   = $this->options_repo->get_settings();
+		$labels     = $this->integration_labels();
+		$selected   = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$contracts  = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 		$project_id = (string) ( $settings['routing']['projectId'] ?? '' );
+		$project_url = BurrowWP\Core\Onboarding\LinkStateManager::project_url_from_settings( $settings );
+		$woo_mode   = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'off';
+		$job        = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
+		$bf_status  = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
+
+		$contract_rows = array();
+		foreach ( $contracts as $key => $c ) {
+			if ( ! is_array( $c ) || empty( $c['enabled'] ) ) {
+				continue;
+			}
+			$provider_key = (string) ( $c['provider'] ?? '' );
+			$contract_rows[] = array(
+				'provider' => (string) ( $labels[ $provider_key ] ?? $provider_key ),
+				'formName' => (string) ( $c['formName'] ?? '' ),
+				'formId'   => (string) ( $c['externalFormId'] ?? '' ),
+				'mode'     => (string) ( $c['mode'] ?? ( ! empty( $c['countOnly'] ) ? 'count_only' : 'custom_fields' ) ),
+				'fields'   => is_array( $c['fieldMappings'] ?? null ) ? count( $c['fieldMappings'] ) : 0,
+			);
+		}
 		?>
 		<div class="wrap">
 			<?php $this->render_admin_notice_from_query(); ?>
 			<?php $this->render_burrow_page_header( __( 'Burrow Setup', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
+			<style>
+				.burrow-setup-icon { display:inline-flex; align-items:center; gap:6px; margin-right:14px; }
+				.burrow-setup-icon .dashicons { width:18px; height:18px; font-size:18px; line-height:18px; color:#2271b1; }
+				.burrow-setup-icon .burrow-menu-glyph { width:18px; height:18px; object-fit:contain; filter:grayscale(1) brightness(0) saturate(100%) invert(34%) sepia(89%) saturate(955%) hue-rotate(178deg) brightness(90%) contrast(91%); }
+			</style>
 
 			<div class="notice notice-success" style="margin:12px 0 20px;"><p><?php esc_html_e( 'Onboarding is complete. Your plugin is connected and configured.', 'burrow' ); ?></p></div>
 
 			<table class="form-table" role="presentation">
 				<tr>
 					<th><?php esc_html_e( 'Connected Project', 'burrow' ); ?></th>
-					<td><code><?php echo esc_html( '' !== $project_id ? $project_id : '-' ); ?></code></td>
+					<td>
+						<code><?php echo esc_html( '' !== $project_id ? $project_id : '-' ); ?></code>
+						<?php if ( '' !== $project_url ) : ?>
+							&nbsp;<a href="<?php echo esc_url( $project_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'View in Burrow &rarr;', 'burrow' ); ?></a>
+						<?php endif; ?>
+					</td>
 				</tr>
 				<tr>
 					<th><?php esc_html_e( 'Base URL', 'burrow' ); ?></th>
@@ -877,27 +906,28 @@ class Burrow_Admin {
 						<?php if ( empty( $selected ) ) : ?>
 							<span class="description"><?php esc_html_e( 'None', 'burrow' ); ?></span>
 						<?php else : ?>
-							<?php foreach ( $selected as $key ) : ?>
-								<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;">
-									<?php echo $this->get_integration_icon_markup( (string) $key ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-									<?php echo esc_html( (string) ( $labels[ (string) $key ] ?? $key ) ); ?>
+							<?php foreach ( $selected as $key ) :
+								$key = (string) $key;
+								$detail = '';
+								if ( 'woocommerce' === $key ) {
+									$detail = 'track' === $woo_mode ? __( 'Orders + Items', 'burrow' ) : __( 'Off', 'burrow' );
+								} else {
+									$fc = 0;
+									foreach ( $contracts as $c ) {
+										if ( is_array( $c ) && ! empty( $c['enabled'] ) && (string) ( $c['provider'] ?? '' ) === $key ) {
+											$fc++;
+										}
+									}
+									$detail = sprintf( _n( '%d form', '%d forms', $fc, 'burrow' ), $fc );
+								}
+								?>
+								<span class="burrow-setup-icon">
+									<?php echo $this->get_integration_icon_markup( $key ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+									<strong><?php echo esc_html( (string) ( $labels[ $key ] ?? $key ) ); ?></strong>
+									<span class="description"><?php echo esc_html( $detail ); ?></span>
 								</span>
 							<?php endforeach; ?>
 						<?php endif; ?>
-					</td>
-				</tr>
-				<tr>
-					<th><?php esc_html_e( 'Active Contracts', 'burrow' ); ?></th>
-					<td>
-						<?php
-						$enabled_count = 0;
-						foreach ( $contracts as $c ) {
-							if ( is_array( $c ) && ! empty( $c['enabled'] ) ) {
-								$enabled_count++;
-							}
-						}
-						echo esc_html( (string) $enabled_count );
-						?>
 					</td>
 				</tr>
 				<tr>
@@ -906,9 +936,57 @@ class Burrow_Admin {
 				</tr>
 			</table>
 
-			<p style="margin-top:16px;">
-				<a class="button button-secondary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&step=connection' ) ); ?>"><?php esc_html_e( 'Reconfigure', 'burrow' ); ?></a>
-				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>" style="margin-left:6px;"><?php esc_html_e( 'Go to Dashboard', 'burrow' ); ?></a>
+			<?php if ( ! empty( $contract_rows ) ) : ?>
+				<h2 style="margin-top:24px;"><?php esc_html_e( 'Active Contracts', 'burrow' ); ?></h2>
+				<table class="widefat striped" style="max-width:900px;">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Provider', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Form', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Form ID', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Mode', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Mapped Fields', 'burrow' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $contract_rows as $row ) : ?>
+							<tr>
+								<td><?php echo esc_html( $row['provider'] ); ?></td>
+								<td><?php echo esc_html( '' !== $row['formName'] ? $row['formName'] : '-' ); ?></td>
+								<td><?php echo esc_html( '' !== $row['formId'] ? $row['formId'] : '-' ); ?></td>
+								<td><?php echo esc_html( $this->format_tracking_mode_label( $row['mode'] ) ); ?></td>
+								<td><?php echo esc_html( (string) (int) $row['fields'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
+
+			<?php if ( in_array( 'woocommerce', $selected, true ) && 'track' === $woo_mode ) : ?>
+				<h2 style="margin-top:24px;"><?php esc_html_e( 'WooCommerce', 'burrow' ); ?></h2>
+				<p><?php esc_html_e( 'Tracking order.placed and item.purchased events for all WooCommerce orders.', 'burrow' ); ?></p>
+			<?php endif; ?>
+
+			<h2 style="margin-top:24px;"><?php esc_html_e( 'Data Backfill', 'burrow' ); ?></h2>
+			<?php if ( in_array( $bf_status, array( 'completed', 'running', 'queued' ), true ) ) : ?>
+				<p>
+					<?php echo $this->render_status_badge( $bf_status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+					<?php if ( ! empty( $job['processedEvents'] ) ) : ?>
+						<?php echo esc_html( sprintf( __( '%d events processed', 'burrow' ), (int) $job['processedEvents'] ) ); ?>
+					<?php endif; ?>
+					&mdash;
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard#backfill' ) ); ?>"><?php esc_html_e( 'Manage backfill', 'burrow' ); ?></a>
+				</p>
+			<?php else : ?>
+				<p class="description"><?php esc_html_e( 'No backfill has been run yet. Import historical data into Burrow to start with a complete dataset.', 'burrow' ); ?></p>
+				<p style="margin-top:8px;">
+					<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard#backfill' ) ); ?>"><?php esc_html_e( 'Queue Backfill', 'burrow' ); ?></a>
+				</p>
+			<?php endif; ?>
+
+			<p style="margin-top:20px;">
+				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>"><?php esc_html_e( 'Go to Dashboard', 'burrow' ); ?></a>
+				<a class="button button-secondary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&step=connection' ) ); ?>" style="margin-left:6px;"><?php esc_html_e( 'Reconfigure', 'burrow' ); ?></a>
 			</p>
 		</div>
 		<?php
@@ -2120,8 +2198,10 @@ class Burrow_Admin {
 			if ( empty( $s['routing']['sourceIds'] ) || ! is_array( $s['routing']['sourceIds'] ) ) {
 				$s['routing']['sourceIds'] = array();
 			}
-			if ( empty( $s['routing']['sourceIds']['forms'] ) ) {
-				$s['routing']['sourceIds']['forms'] = $project_source_id;
+			foreach ( array( 'forms', 'ecommerce', 'system' ) as $ch ) {
+				if ( empty( $s['routing']['sourceIds'][ $ch ] ) ) {
+					$s['routing']['sourceIds'][ $ch ] = $project_source_id;
+				}
 			}
 		}
 		if ( isset( $body['sdkState'] ) && is_array( $body['sdkState'] ) ) {

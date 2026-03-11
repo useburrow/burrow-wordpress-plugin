@@ -246,47 +246,40 @@ class Burrow {
 		if ( ! in_array( 'woocommerce', $selected_integrations, true ) || 'track' !== $woocommerce_mode ) {
 			return;
 		}
-		$routing  = (array) $settings['routing'];
-		$source   = isset( $routing['sourceIds']['ecommerce'] ) ? trim( (string) $routing['sourceIds']['ecommerce'] ) : '';
-		if ( '' === $source ) {
-			error_log( '[Burrow ecommerce] Missing ecommerce source id; skipping Woo order emission.' );
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow ecommerce] Skipped: ' . $e->getMessage() );
 			return;
 		}
 
-		$order_envelope = $this->envelopes->build(
-			$routing,
-			array(
-				'projectSourceId' => $source,
-				'integrationId'   => $routing['integrationId'] ?? null,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'order.placed' ),
-				'entityType'      => 'order',
-				'externalEntityId'=> (string) $data['orderId'],
-				'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
-				'channel'         => 'ecommerce',
-				'event'           => 'order.placed',
-				'source'          => $this->event_source_for_provider( 'woocommerce' ),
-				'description'     => 'Order placed',
-				'timestamp'       => $submitted_at,
-				'properties'      => array(
-					'orderId'     => $data['orderId'],
-					'orderTotal'  => $data['total'],
-					'total'       => $data['total'],
-					'subtotal'    => isset( $data['subtotal'] ) ? $data['subtotal'] : null,
-					'shipping'    => isset( $data['shipping'] ) ? $data['shipping'] : null,
-					'discount'    => isset( $data['discount'] ) ? $data['discount'] : null,
-					'currency'    => $data['currency'],
-					'itemCount'   => $data['itemCount'],
-					'submittedAt' => $submitted_at,
+		$org_id = (string) ( $settings['routing']['organizationId'] ?? '' );
+
+		try {
+			$order_envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
+				array(
+					'organizationId' => $org_id,
+					'orderId'        => (string) $data['orderId'],
+					'orderTotal'     => $data['total'],
+					'total'          => $data['total'],
+					'currency'       => (string) $data['currency'],
+					'itemCount'      => (int) $data['itemCount'],
+					'submittedAt'    => $submitted_at,
+					'timestamp'      => $submitted_at,
+					'tags'           => array(
+						'provider'      => 'woocommerce',
+						'currency'      => (string) $data['currency'],
+						'orderId'       => (string) $data['orderId'],
+						'status'        => (string) $data['status'],
+						'paymentMethod' => (string) $data['paymentMethod'],
+					),
 				),
-				'tags'            => array(
-					'provider'      => 'woocommerce',
-					'currency'      => (string) $data['currency'],
-					'orderId'       => (string) $data['orderId'],
-					'status'        => (string) $data['status'],
-					'paymentMethod' => (string) $data['paymentMethod'],
-				),
-			)
-		);
+				$routing_resolver
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow ecommerce] order.placed build failed: ' . $e->getMessage() );
+			return;
+		}
 
 		$this->outbox_repo->enqueue(
 			$this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
@@ -298,43 +291,35 @@ class Burrow {
 
 		foreach ( (array) $data['items'] as $item ) {
 			$item_event_key = $this->event_keys->ecommerce_item_key( (string) $data['orderId'], (string) $item['lineItemId'] );
-			$item_envelope = $this->envelopes->build(
-				$routing,
-				array(
-					'projectSourceId' => $source,
-					'integrationId'   => $routing['integrationId'] ?? null,
-					'icon'            => $this->resolve_event_icon_override( $settings, 'item.purchased' ),
-					'entityType'      => 'order_item',
-					'externalEntityId'=> (string) ( $item['lineItemId'] ?? '' ),
-					'externalEventId' => $item_event_key,
-					'channel'         => 'ecommerce',
-					'event'           => 'item.purchased',
-					'source'          => $this->event_source_for_provider( 'woocommerce' ),
-					'description'     => 'Order item purchased',
-					'timestamp'       => $submitted_at,
-					'properties'      => array(
-						'orderId'     => $data['orderId'],
-						'productId'   => $item['productId'],
-						'productName' => $item['productName'],
-						'variantName' => $item['variantName'],
-						'quantity'    => $item['quantity'],
-						'unitPrice'   => $item['unitPrice'],
-						'lineTotal'   => $item['lineTotal'],
-						'currency'    => $data['currency'],
-						'productUrl'  => $item['productUrl'],
-						'submittedAt' => $submitted_at,
+			try {
+				$item_envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
+					array(
+						'organizationId' => $org_id,
+						'orderId'        => (string) $data['orderId'],
+						'productId'      => (string) $item['productId'],
+						'productName'    => (string) $item['productName'],
+						'quantity'       => (int) $item['quantity'],
+						'unitPrice'      => (float) $item['unitPrice'],
+						'lineTotal'      => (float) $item['lineTotal'],
+						'currency'       => (string) $data['currency'],
+						'submittedAt'    => $submitted_at,
+						'timestamp'      => $submitted_at,
+						'tags'           => array(
+							'provider'    => 'woocommerce',
+							'currency'    => (string) $data['currency'],
+							'orderId'     => (string) $data['orderId'],
+							'productId'   => (string) $item['productId'],
+							'productName' => (string) $item['productName'],
+							'category'    => (string) $item['category'],
+							'vendor'      => (string) $item['vendor'],
+						),
 					),
-					'tags'            => array(
-						'provider'    => 'woocommerce',
-						'currency'    => (string) $data['currency'],
-						'orderId'     => (string) $data['orderId'],
-						'productId'   => (string) $item['productId'],
-						'productName' => (string) $item['productName'],
-						'category'    => (string) $item['category'],
-						'vendor'      => (string) $item['vendor'],
-					),
-				)
-			);
+					$routing_resolver
+				);
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow ecommerce] item.purchased build failed: ' . $e->getMessage() );
+				continue;
+			}
 
 			$this->outbox_repo->enqueue(
 				$item_event_key,
@@ -452,27 +437,20 @@ class Burrow {
 	 */
 	public function emit_system_heartbeat() {
 		$settings = $this->options_repo->get_settings();
-		$routing  = (array) $settings['routing'];
-		$source   = isset( $routing['sourceIds']['system'] ) ? trim( (string) $routing['sourceIds']['system'] ) : '';
-		if ( '' === $source ) {
-			error_log( '[Burrow system] Missing system source id; skipping heartbeat emission.' );
+		try {
+			$routing  = $this->build_channel_routing_resolver( $settings );
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildSystemHeartbeatEvent(
+				array(
+					'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+					'responseMs'     => 0,
+					'tags'           => array( 'provider' => 'snapshot' ),
+				),
+				$routing
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow system] Heartbeat skipped: ' . $e->getMessage() );
 			return;
 		}
-		$envelope = $this->envelopes->build(
-			$routing,
-			array(
-				'projectSourceId' => $source,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'heartbeat.ping' ),
-				'channel'         => 'system',
-				'event'           => 'heartbeat.ping',
-				'source'          => 'snapshot',
-				'description'     => 'Plugin heartbeat',
-				'properties'      => array(
-					'responseMs' => 0,
-				),
-				'tags'            => array( 'provider' => 'snapshot' ),
-			)
-		);
 		$this->outbox_repo->enqueue(
 			'system:heartbeat:' . gmdate( 'YmdH' ),
 			'system',
@@ -489,33 +467,32 @@ class Burrow {
 	 */
 	public function emit_system_stack_snapshot() {
 		$settings  = $this->options_repo->get_settings();
-		$routing   = (array) $settings['routing'];
-		$source    = isset( $routing['sourceIds']['system'] ) ? trim( (string) $routing['sourceIds']['system'] ) : '';
-		if ( '' === $source ) {
-			error_log( '[Burrow system] Missing system source id; skipping stack snapshot emission.' );
-			return;
-		}
 		$collector = new BurrowWP\Core\System\SystemMetricsCollector();
 		$snapshot  = $collector->collect_stack_snapshot();
-		$envelope  = $this->envelopes->build(
-			$routing,
-			array(
-				'projectSourceId' => $source,
-				'icon'            => $this->resolve_event_icon_override( $settings, 'stack.snapshot' ),
-				'channel'         => 'system',
-				'event'           => 'stack.snapshot',
-				'source'          => 'snapshot',
-				'description'     => 'Daily stack snapshot',
-				'properties'      => $snapshot,
-				'tags'            => array(
-					'cmsVersion' => (string) get_bloginfo( 'version' ),
-					'phpVersion' => (string) phpversion(),
-					'hasUpdates' => ! empty( $snapshot['updatesAvailable'] ) ? 'true' : 'false',
-					'updatesCount' => (string) (int) ( $snapshot['updatesAvailable'] ?? 0 ),
-					'provider'   => 'snapshot',
+		try {
+			$routing  = $this->build_channel_routing_resolver( $settings );
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildSystemStackSnapshotEvent(
+				array(
+					'organizationId'  => (string) ( $settings['routing']['organizationId'] ?? '' ),
+					'cms'             => $snapshot['cms'] ?? array(),
+					'runtime'         => $snapshot['runtime'] ?? array(),
+					'plugins'         => $snapshot['plugins'] ?? array(),
+					'updatesAvailable'=> $snapshot['updatesAvailable'] ?? 0,
+					'totalPlugins'    => $snapshot['totalPlugins'] ?? 0,
+					'tags'            => array(
+						'cmsVersion'   => (string) get_bloginfo( 'version' ),
+						'phpVersion'   => (string) phpversion(),
+						'hasUpdates'   => ! empty( $snapshot['updatesAvailable'] ) ? 'true' : 'false',
+						'updatesCount' => (string) (int) ( $snapshot['updatesAvailable'] ?? 0 ),
+						'provider'     => 'snapshot',
+					),
 				),
-			)
-		);
+				$routing
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow system] Stack snapshot skipped: ' . $e->getMessage() );
+			return;
+		}
 		$this->outbox_repo->enqueue(
 			'system:stack:' . gmdate( 'Ymd' ),
 			'system',
@@ -740,20 +717,47 @@ class Burrow {
 	 * @param array<string,mixed> $settings Settings.
 	 * @return string|null
 	 */
-	private function resolve_backfill_source_for_channel( $channel, array $settings ) {
-		$routing = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
+	/**
+	 * Build an SDK ChannelRoutingResolver from plugin settings.
+	 *
+	 * Provides the SDK with projectId + per-channel projectSourceIds so
+	 * it can resolve routing for any channel (forms, ecommerce, system).
+	 *
+	 * @param array<string,mixed> $settings Plugin settings.
+	 * @return \Burrow\Sdk\Events\ChannelRoutingResolver
+	 */
+	private function build_channel_routing_resolver( array $settings ) {
+		$routing    = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
 		$source_ids = isset( $routing['sourceIds'] ) && is_array( $routing['sourceIds'] ) ? $routing['sourceIds'] : array();
+		$fallback   = isset( $routing['projectSourceId'] ) ? trim( (string) $routing['projectSourceId'] ) : '';
 
-		if ( 'ecommerce' === $channel && isset( $source_ids['ecommerce'] ) && '' !== trim( (string) $source_ids['ecommerce'] ) ) {
-			return (string) $source_ids['ecommerce'];
+		$channel_sources = array();
+		foreach ( array( 'forms', 'ecommerce', 'system' ) as $ch ) {
+			$val = isset( $source_ids[ $ch ] ) ? trim( (string) $source_ids[ $ch ] ) : '';
+			$channel_sources[ $ch ] = '' !== $val ? $val : $fallback;
 		}
-		if ( 'system' === $channel && isset( $source_ids['system'] ) && '' !== trim( (string) $source_ids['system'] ) ) {
-			return (string) $source_ids['system'];
+
+		$state = new \Burrow\Sdk\Events\ChannelRoutingState(
+			projectId: isset( $routing['projectId'] ) ? trim( (string) $routing['projectId'] ) : null,
+			projectSourceIds: $channel_sources,
+			clientId: isset( $routing['clientId'] ) ? trim( (string) $routing['clientId'] ) : null
+		);
+
+		return new \Burrow\Sdk\Events\ChannelRoutingResolver( $state );
+	}
+
+	/**
+	 * Resolve source for a backfill channel using the SDK routing resolver.
+	 */
+	private function resolve_backfill_source_for_channel( $channel, array $settings ) {
+		try {
+			$resolver = $this->build_channel_routing_resolver( $settings );
+			$resolved = $resolver->getRoutingForChannel( (string) $channel );
+			return $resolved['projectSourceId'];
+		} catch ( \Throwable $e ) {
+			$routing = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
+			return isset( $routing['projectSourceId'] ) ? (string) $routing['projectSourceId'] : null;
 		}
-		if ( isset( $source_ids['forms'] ) && '' !== trim( (string) $source_ids['forms'] ) ) {
-			return (string) $source_ids['forms'];
-		}
-		return isset( $routing['projectSourceId'] ) ? (string) $routing['projectSourceId'] : null;
 	}
 
 	/**
@@ -926,11 +930,12 @@ class Burrow {
 		if ( ! is_array( $orders ) || empty( $orders ) ) {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
 		}
-		$routing  = (array) ( $settings['routing'] ?? array() );
-		$source   = isset( $routing['sourceIds']['ecommerce'] ) ? trim( (string) $routing['sourceIds']['ecommerce'] ) : '';
-		if ( '' === $source ) {
-			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'Missing ecommerce source id. Re-link project to provision ecommerce source.' );
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'Missing ecommerce routing: ' . $e->getMessage() );
 		}
+		$org_id   = (string) ( $settings['routing']['organizationId'] ?? '' );
 		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
 		$events   = array();
 		foreach ( $orders as $order ) {
@@ -939,79 +944,58 @@ class Burrow {
 				continue;
 			}
 			$submitted_at = $this->resolve_order_timestamp( $order );
-			$events[] = $this->envelopes->build(
-				$routing,
-				array(
-					'projectSourceId' => $source,
-					'integrationId'   => $routing['integrationId'] ?? null,
-					'icon'            => $this->resolve_event_icon_override( $settings, 'order.placed' ),
-					'entityType'      => 'order',
-					'externalEntityId'=> (string) $data['orderId'],
-					'externalEventId' => $this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
-					'channel'         => 'ecommerce',
-					'event'           => 'order.placed',
-					'source'          => $this->event_source_for_provider( 'woocommerce' ),
-					'description'     => 'Backfilled order placed',
-					'timestamp'       => $submitted_at,
-					'properties'      => array(
-						'orderId'     => $data['orderId'],
-						'orderTotal'  => $data['total'],
-						'total'       => $data['total'],
-						'subtotal'    => isset( $data['subtotal'] ) ? $data['subtotal'] : null,
-						'shipping'    => isset( $data['shipping'] ) ? $data['shipping'] : null,
-						'discount'    => isset( $data['discount'] ) ? $data['discount'] : null,
-						'currency'    => $data['currency'],
-						'itemCount'   => $data['itemCount'],
-						'submittedAt' => $submitted_at,
-					),
-					'tags'            => array(
-						'provider'      => 'woocommerce',
-						'currency'      => (string) $data['currency'],
-						'orderId'       => (string) $data['orderId'],
-						'status'        => (string) $data['status'],
-						'paymentMethod' => (string) $data['paymentMethod'],
-					),
-				)
-			);
-			foreach ( (array) $data['items'] as $item ) {
-				$item_event_key = $this->event_keys->ecommerce_item_key( (string) $data['orderId'], (string) $item['lineItemId'] );
-				$events[] = $this->envelopes->build(
-					$routing,
+			try {
+				$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
 					array(
-						'projectSourceId' => $source,
-						'integrationId'   => $routing['integrationId'] ?? null,
-						'icon'            => $this->resolve_event_icon_override( $settings, 'item.purchased' ),
-						'entityType'      => 'order_item',
-						'externalEntityId'=> (string) ( $item['lineItemId'] ?? '' ),
-						'externalEventId' => $item_event_key,
-						'channel'         => 'ecommerce',
-						'event'           => 'item.purchased',
-						'source'          => $this->event_source_for_provider( 'woocommerce' ),
-						'description'     => 'Backfilled order item purchased',
-						'timestamp'       => $submitted_at,
-						'properties'      => array(
-							'orderId'     => $data['orderId'],
-							'productId'   => $item['productId'],
-							'productName' => $item['productName'],
-							'variantName' => $item['variantName'],
-							'quantity'    => $item['quantity'],
-							'unitPrice'   => $item['unitPrice'],
-							'lineTotal'   => $item['lineTotal'],
-							'currency'    => $data['currency'],
-							'productUrl'  => $item['productUrl'],
-							'submittedAt' => $submitted_at,
+						'organizationId' => $org_id,
+						'orderId'        => (string) $data['orderId'],
+						'orderTotal'     => $data['total'],
+						'total'          => $data['total'],
+						'currency'       => (string) $data['currency'],
+						'itemCount'      => (int) $data['itemCount'],
+						'submittedAt'    => $submitted_at,
+						'timestamp'      => $submitted_at,
+						'tags'           => array(
+							'provider'      => 'woocommerce',
+							'currency'      => (string) $data['currency'],
+							'orderId'       => (string) $data['orderId'],
+							'status'        => (string) $data['status'],
+							'paymentMethod' => (string) $data['paymentMethod'],
 						),
-						'tags'            => array(
-							'provider'    => 'woocommerce',
-							'currency'    => (string) $data['currency'],
-							'orderId'     => (string) $data['orderId'],
-							'productId'   => (string) $item['productId'],
-							'productName' => (string) $item['productName'],
-							'category'    => (string) $item['category'],
-							'vendor'      => (string) $item['vendor'],
-						),
-					)
+					),
+					$routing_resolver
 				);
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow backfill] order.placed build failed for order ' . $data['orderId'] . ': ' . $e->getMessage() );
+				continue;
+			}
+			foreach ( (array) $data['items'] as $item ) {
+				try {
+					$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
+						array(
+							'organizationId' => $org_id,
+							'orderId'        => (string) $data['orderId'],
+							'productId'      => (string) $item['productId'],
+							'productName'    => (string) $item['productName'],
+							'quantity'       => (int) $item['quantity'],
+							'unitPrice'      => (float) $item['unitPrice'],
+							'lineTotal'      => (float) $item['lineTotal'],
+							'currency'       => (string) $data['currency'],
+							'submittedAt'    => $submitted_at,
+							'timestamp'      => $submitted_at,
+							'tags'           => array(
+								'provider'    => 'woocommerce',
+								'currency'    => (string) $data['currency'],
+								'orderId'     => (string) $data['orderId'],
+								'vendor'      => (string) $item['vendor'],
+							),
+						),
+						$routing_resolver
+					);
+				} catch ( \Throwable $e ) {
+					error_log( '[Burrow backfill] item.purchased build failed: ' . $e->getMessage() );
+					continue;
+				}
 			}
 		}
 		return array(
