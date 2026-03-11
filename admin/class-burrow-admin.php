@@ -1243,7 +1243,7 @@ class Burrow_Admin {
 		<p class="description">
 			<?php
 			echo wp_kses(
-				__( 'Icon overrides use Lucide icon key names (for example <code>file-signature</code>, <code>shopping-cart</code>, <code>layers</code>). See <a href="https://lucide.dev/icons" target="_blank" rel="noopener noreferrer">lucide.dev/icons</a>.', 'burrow' ),
+				__( 'Icons are resolved automatically from Burrow defaults. If needed later, icon overrides use Lucide icon key names (for example <code>file-signature</code>, <code>shopping-cart</code>, <code>layers</code>). See <a href="https://lucide.dev/icons" target="_blank" rel="noopener noreferrer">lucide.dev/icons</a>.', 'burrow' ),
 				array(
 					'a'    => array(
 						'href'   => true,

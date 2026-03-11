@@ -27,4 +27,5 @@ require_once dirname( __DIR__ ) . '/src/Core/Onboarding/LinkStateManager.php';
 require_once dirname( __DIR__ ) . '/src/Core/Outbox/RetryPolicy.php';
 require_once dirname( __DIR__ ) . '/src/Infrastructure/Persistence/WpOutboxRepository.php';
 require_once dirname( __DIR__ ) . '/src/Infrastructure/Http/BurrowApiClient.php';
+require_once dirname( __DIR__ ) . '/src/Infrastructure/Http/PortlessAwareTransport.php';
 require_once dirname( __DIR__ ) . '/src/Core/Outbox/OutboxWorker.php';
