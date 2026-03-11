@@ -495,6 +495,10 @@ class Burrow_Admin {
 		$settings      = $this->options_repo->get_settings();
 		$retention_days = isset( $settings['outbox_retention_days'] ) ? max( 1, (int) $settings['outbox_retention_days'] ) : 30;
 		$project_url   = BurrowWP\Core\Onboarding\LinkStateManager::project_url_from_settings( $settings );
+		$ingestion_key_prefix = '';
+		if ( isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ) {
+			$ingestion_key_prefix = isset( $settings['ingestion_key']['keyPrefix'] ) ? trim( (string) $settings['ingestion_key']['keyPrefix'] ) : '';
+		}
 		$labels        = $this->integration_labels();
 		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 		$contract_rows = array();
@@ -528,6 +532,11 @@ class Burrow_Admin {
 			<?php $this->render_burrow_page_header( __( 'Burrow Operations', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
 			<p><strong><?php esc_html_e( 'Connected project:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( $settings['routing']['projectId'] ?? '' ) ); ?></p>
+			<?php if ( '' !== $ingestion_key_prefix ) : ?>
+				<p class="description"><?php echo esc_html( sprintf( __( 'Dispatching with project-scoped key prefix: %s', 'burrow' ), $ingestion_key_prefix ) ); ?></p>
+			<?php else : ?>
+				<p class="description"><?php esc_html_e( 'Scoped ingestion key not available yet; dispatch currently uses the configured API key.', 'burrow' ); ?></p>
+			<?php endif; ?>
 			<?php if ( '' !== $project_url ) : ?>
 				<p><a class="button button-secondary" href="<?php echo esc_url( $project_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'View in Burrow', 'burrow' ); ?></a></p>
 			<?php endif; ?>
