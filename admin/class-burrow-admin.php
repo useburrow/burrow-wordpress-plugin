@@ -17,6 +17,25 @@ class Burrow_Admin {
 		$this->outbox_repo  = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
 	}
 
+	/**
+	 * Build an API client for post-onboarding admin operations.
+	 * Uses the ingestion key as the auth credential (the API key is never stored).
+	 *
+	 * @param array<string,mixed> $settings Plugin settings.
+	 * @return BurrowWP\Infrastructure\Http\BurrowApiClient
+	 */
+	private function build_admin_api_client( array $settings ) {
+		$ingestion_key = isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array();
+		$auth_key      = BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_api_key( '', $ingestion_key );
+		return new BurrowWP\Infrastructure\Http\BurrowApiClient(
+			$settings['base_url'],
+			$auth_key,
+			5,
+			$ingestion_key,
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+	}
+
 	public function enqueue_styles() {}
 	public function enqueue_scripts() {}
 
@@ -51,7 +70,8 @@ class Burrow_Admin {
 	 * Whether the onboarding wizard has been fully completed.
 	 */
 	public function is_onboarding_complete( array $settings ) {
-		if ( empty( $settings['api_key'] ) || empty( $settings['routing']['projectId'] ) ) {
+		$has_key = ! empty( $settings['ingestion_key']['key'] );
+		if ( ! $has_key || empty( $settings['routing']['projectId'] ) ) {
 			return false;
 		}
 		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
@@ -96,14 +116,14 @@ class Burrow_Admin {
 
 		if ( 'setup_connection' === $action ) {
 			$settings['base_url'] = esc_url_raw( (string) wp_unslash( $_POST['base_url'] ?? '' ) );
-			$settings['api_key']  = sanitize_text_field( (string) wp_unslash( $_POST['api_key'] ?? '' ) );
+			$onboarding_api_key   = sanitize_text_field( (string) wp_unslash( $_POST['api_key'] ?? '' ) );
 			if ( empty( $settings['base_url'] ) ) {
 				$settings['base_url'] = 'https://api.useburrow.com';
 			}
 
 			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
 				$settings['base_url'],
-				$settings['api_key'],
+				$onboarding_api_key,
 				5,
 				isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
 				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
@@ -112,6 +132,7 @@ class Burrow_Admin {
 			if ( empty( $res['ok'] ) ) {
 				$message = __( 'Connection failed.', 'burrow' ) . ' ' . ( $res['error'] ?? '' );
 			} else {
+				set_transient( 'burrow_onboarding_api_key', $onboarding_api_key, HOUR_IN_SECONDS );
 				$body                                   = (array) ( $res['body'] ?? array() );
 				$settings['project_candidates']         = $this->extract_project_candidates( $body );
 				$settings['routing']['organizationId']  = (string) ( $body['organizationId'] ?? $settings['routing']['organizationId'] );
@@ -124,13 +145,17 @@ class Burrow_Admin {
 			$index      = (int) ( $_POST['project_index'] ?? -1 );
 			$candidates = isset( $settings['project_candidates'] ) && is_array( $settings['project_candidates'] ) ? $settings['project_candidates'] : array();
 			$step       = 'project';
-			if ( ! isset( $candidates[ $index ] ) ) {
+			$onboarding_api_key = (string) get_transient( 'burrow_onboarding_api_key' );
+			if ( '' === $onboarding_api_key ) {
+				$message = __( 'Session expired. Please re-enter your API key.', 'burrow' );
+				$step    = 'connection';
+			} elseif ( ! isset( $candidates[ $index ] ) ) {
 				$message = __( 'Please select a project.', 'burrow' );
 			} else {
 				$selected = $candidates[ $index ];
 				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient(
 					$settings['base_url'],
-					$settings['api_key'],
+					$onboarding_api_key,
 					5,
 					isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
 					isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
@@ -147,6 +172,9 @@ class Burrow_Admin {
 				);
 				$message = $this->persist_link_response( $res );
 				$step    = ! empty( $res['ok'] ) ? 'integrations' : 'project';
+				if ( ! empty( $res['ok'] ) ) {
+					delete_transient( 'burrow_onboarding_api_key' );
+				}
 			}
 		} elseif ( 'save_integrations' === $action ) {
 			$selected = isset( $_POST['integrations'] ) && is_array( $_POST['integrations'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['integrations'] ) ) : array();
@@ -218,13 +246,7 @@ class Burrow_Admin {
 				$step    = 'project';
 				$this->redirect_with_notice( $step, $message );
 			}
-			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
-				$settings['base_url'],
-				$settings['api_key'],
-				5,
-				isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
-				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
-			);
+			$client = $this->build_admin_api_client( $settings );
 			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 			$message = $this->persist_contract_response( $res );
 			if ( ! empty( $res['ok'] ) ) {
@@ -339,14 +361,8 @@ class Burrow_Admin {
 					$routing_error = $this->validate_routing_before_contract_sync( $settings );
 					if ( '' !== $routing_error ) {
 						$message = $routing_error;
-					} else {
-					$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
-						$settings['base_url'],
-						$settings['api_key'],
-						5,
-						isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
-						isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
-					);
+				} else {
+				$client = $this->build_admin_api_client( $settings );
 						$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 						$message = $this->persist_contract_response( $res );
 					}
@@ -540,7 +556,7 @@ class Burrow_Admin {
 							<input type="hidden" name="burrow_action" value="setup_connection" />
 							<table class="form-table" role="presentation">
 								<tr><th><label for="base_url"><?php esc_html_e( 'Burrow Base URL', 'burrow' ); ?></label></th><td><input name="base_url" id="base_url" type="url" class="regular-text" value="<?php echo esc_attr( $settings['base_url'] ); ?>" placeholder="https://api.useburrow.com" /></td></tr>
-								<tr><th><label for="api_key"><?php esc_html_e( 'API Key', 'burrow' ); ?></label></th><td><input name="api_key" id="api_key" type="text" class="regular-text" value="<?php echo esc_attr( $settings['api_key'] ); ?>" /><p class="description"><?php esc_html_e( 'Find your API key here:', 'burrow' ); ?> <a href="https://app.useburrow.com/settings" target="_blank" rel="noopener noreferrer">app.useburrow.com/settings</a></p></td></tr>
+								<tr><th><label for="api_key"><?php esc_html_e( 'API Key', 'burrow' ); ?></label></th><td><input name="api_key" id="api_key" type="password" class="regular-text" value="" autocomplete="off" /><p class="description"><?php esc_html_e( 'Used only to validate access during setup. Not stored after linking.', 'burrow' ); ?> <a href="https://app.useburrow.com/settings" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Find your API key', 'burrow' ); ?></a></p></td></tr>
 							</table>
 							<?php submit_button( __( 'Validate Connection & Continue', 'burrow' ) ); ?>
 						</form>
@@ -1945,7 +1961,8 @@ class Burrow_Admin {
 	}
 
 	private function default_wizard_step( array $settings ) {
-		if ( empty( $settings['api_key'] ) ) {
+		$has_key = ! empty( $settings['ingestion_key']['key'] ) || get_transient( 'burrow_onboarding_api_key' );
+		if ( ! $has_key ) {
 			return 'connection';
 		}
 		if ( empty( $settings['routing']['projectId'] ) ) {

@@ -2,21 +2,24 @@
 /**
  * Plugin configuration persistence in WordPress options.
  *
+ * Secrets (ingestion key) are encrypted at rest using SecretStore and
+ * transparently decrypted on read so callers never handle ciphertext.
+ *
  * @package Burrow
  */
 
 namespace BurrowWP\Infrastructure\Persistence;
 
+use BurrowWP\Core\Auth\SecretStore;
+
 class WpOptionsRepository {
 	/**
-	 * Option key.
-	 *
 	 * @var string
 	 */
 	private $option_name = 'burrow_settings';
 
 	/**
-	 * Fetch settings with defaults.
+	 * Fetch settings with defaults, decrypting secrets.
 	 *
 	 * @return array<string,mixed>
 	 */
@@ -26,10 +29,9 @@ class WpOptionsRepository {
 			$settings = array();
 		}
 
-		return wp_parse_args(
+		$settings = wp_parse_args(
 			$settings,
 			array(
-				'api_key'             => '',
 				'base_url'            => 'https://api.useburrow.com',
 				'ingestion_key'       => array(
 					'key'       => '',
@@ -59,13 +61,13 @@ class WpOptionsRepository {
 						'system'    => '',
 					),
 				),
-			'capabilities'        => array(
-				'ecommerce_funnel' => false,
-			),
-			'checkout_sessions'   => array(),
-			'forms_contracts'     => array(),
-		'forms_contract_cache'=> array(),
-			'selected_forms'      => array(),
+				'capabilities'        => array(
+					'ecommerce_funnel' => false,
+				),
+				'checkout_sessions'   => array(),
+				'forms_contracts'     => array(),
+				'forms_contract_cache'=> array(),
+				'selected_forms'      => array(),
 				'contract_sync'       => array(
 					'version'  => '',
 					'hash'     => '',
@@ -77,15 +79,20 @@ class WpOptionsRepository {
 				'outbox_retention_days' => 30,
 			)
 		);
+
+		self::decrypt_secrets( $settings );
+
+		return $settings;
 	}
 
 	/**
-	 * Persist settings.
+	 * Persist settings, encrypting secrets before storage.
 	 *
 	 * @param array<string,mixed> $settings Settings payload.
 	 * @return bool
 	 */
 	public function save_settings( array $settings ) {
+		self::encrypt_secrets( $settings );
 		return update_option( $this->option_name, $settings );
 	}
 
@@ -100,5 +107,33 @@ class WpOptionsRepository {
 		$settings         = $this->get_settings();
 		$settings[ $key ] = $value;
 		return $this->save_settings( $settings );
+	}
+
+	/**
+	 * Decrypt secret fields in-place after loading from the database.
+	 *
+	 * @param array<string,mixed> $settings Settings (by reference).
+	 */
+	private static function decrypt_secrets( array &$settings ): void {
+		if ( isset( $settings['ingestion_key']['key'] ) && is_string( $settings['ingestion_key']['key'] ) ) {
+			$settings['ingestion_key']['key'] = SecretStore::decrypt( $settings['ingestion_key']['key'] );
+		}
+		if ( isset( $settings['sdk_state']['ingestionKey'] ) && is_string( $settings['sdk_state']['ingestionKey'] ) ) {
+			$settings['sdk_state']['ingestionKey'] = SecretStore::decrypt( $settings['sdk_state']['ingestionKey'] );
+		}
+	}
+
+	/**
+	 * Encrypt secret fields in-place before writing to the database.
+	 *
+	 * @param array<string,mixed> $settings Settings (by reference).
+	 */
+	private static function encrypt_secrets( array &$settings ): void {
+		if ( isset( $settings['ingestion_key']['key'] ) && is_string( $settings['ingestion_key']['key'] ) && '' !== $settings['ingestion_key']['key'] ) {
+			$settings['ingestion_key']['key'] = SecretStore::encrypt( $settings['ingestion_key']['key'] );
+		}
+		if ( isset( $settings['sdk_state']['ingestionKey'] ) && is_string( $settings['sdk_state']['ingestionKey'] ) && '' !== $settings['sdk_state']['ingestionKey'] ) {
+			$settings['sdk_state']['ingestionKey'] = SecretStore::encrypt( $settings['sdk_state']['ingestionKey'] );
+		}
 	}
 }

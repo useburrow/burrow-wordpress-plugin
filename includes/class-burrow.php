@@ -190,15 +190,17 @@ class Burrow {
 		if ( null !== $this->delivery ) {
 			return $this->delivery;
 		}
-		$settings = $this->options_repo->get_settings();
-		if ( empty( $settings['api_key'] ) || empty( $settings['base_url'] ) ) {
+		$settings      = $this->options_repo->get_settings();
+		$ingestion_key = isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array();
+		$auth_key      = BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_api_key( '', $ingestion_key );
+		if ( '' === $auth_key || empty( $settings['base_url'] ) ) {
 			return null;
 		}
 		$api_client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
 			$settings['base_url'],
-			$settings['api_key'],
+			$auth_key,
 			5,
-			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+			$ingestion_key,
 			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
 		);
 		$sdk_client = $api_client->get_dispatch_client();
@@ -1263,11 +1265,10 @@ class Burrow {
 		if ( ! in_array( $status, array( 'queued', 'running' ), true ) ) {
 			return;
 		}
-		$configured_api_key = isset( $settings['api_key'] ) ? trim( (string) $settings['api_key'] ) : '';
 		$ingestion_key = isset( $settings['ingestion_key']['key'] ) ? trim( (string) $settings['ingestion_key']['key'] ) : '';
-		if ( '' === $configured_api_key && '' === $ingestion_key ) {
+		if ( '' === $ingestion_key ) {
 			$job['status']    = 'failed';
-			$job['lastError'] = 'Missing Burrow key for backfill.';
+			$job['lastError'] = 'Missing ingestion key for backfill. Re-link the project.';
 			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
