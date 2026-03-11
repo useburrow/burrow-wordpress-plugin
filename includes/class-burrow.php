@@ -639,63 +639,121 @@ class Burrow {
 			return;
 		}
 
-		$client  = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+		$events_by_channel = $this->group_events_by_channel( $events );
+
+		$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
 			$settings['base_url'],
 			$settings['api_key'],
 			5,
 			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
 			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
 		);
-		$payload = array(
-			'events'            => $events,
-			'cursor'            => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
-			'windowStart'       => $window_start,
-			'windowEnd'         => $window_end,
-			'source'            => 'wordpress-plugin',
-			'metadata'          => array(
-				'cursor'      => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
-				'windowStart' => $window_start,
-				'windowEnd'   => $window_end,
-				'source'      => 'wordpress-plugin',
-			),
-			'batchSize'         => $batch_size,
-			'perKeyConcurrency' => max( 1, (int) ( $job['perKeyConcurrency'] ?? 4 ) ),
-			'routingDefaults'   => array(
-				'clientId'       => $settings['routing']['clientId'] ?? null,
-				'projectId'      => $settings['routing']['projectId'] ?? null,
-				'projectSourceId'=> $settings['routing']['projectSourceId'] ?? null,
-				'integrationId'  => $settings['routing']['integrationId'] ?? null,
-			),
-		);
-		$response = $client->backfill_events( $payload );
-		if ( empty( $response['ok'] ) ) {
-			$job['status']    = 'failed';
-			$job['lastError'] = $this->format_backfill_error( is_array( $response ) ? $response : array() );
-			$job['updatedAt'] = gmdate( 'c' );
-			$settings['backfill'] = $job;
-			$this->options_repo->save_settings( $settings );
-			$debug_payload = array(
-				'status' => $response['status'] ?? 0,
-				'error'  => $response['error'] ?? '',
-				'body'   => $response['body'] ?? array(),
+
+		$total_accepted = 0;
+		$last_error     = '';
+
+		foreach ( $events_by_channel as $channel => $channel_events ) {
+			$channel_source_id = $this->resolve_backfill_source_for_channel( $channel, $settings );
+
+			$payload = array(
+				'events'            => $channel_events,
+				'channel'           => $channel,
+				'cursor'            => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
+				'windowStart'       => $window_start,
+				'windowEnd'         => $window_end,
+				'source'            => 'wordpress-plugin',
+				'metadata'          => array(
+					'cursor'      => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
+					'windowStart' => $window_start,
+					'windowEnd'   => $window_end,
+					'source'      => 'wordpress-plugin',
+				),
+				'batchSize'         => $batch_size,
+				'perKeyConcurrency' => max( 1, (int) ( $job['perKeyConcurrency'] ?? 4 ) ),
+				'routing'           => array(
+					'clientId'        => $settings['routing']['clientId'] ?? null,
+					'projectId'       => $settings['routing']['projectId'] ?? null,
+					'projectSourceId' => $channel_source_id,
+					'integrationId'   => $settings['routing']['integrationId'] ?? null,
+				),
 			);
-			error_log( '[Burrow backfill failure] ' . wp_json_encode( $debug_payload ) );
-			return;
+
+			$response = $client->backfill_events( $payload );
+			if ( empty( $response['ok'] ) ) {
+				$job['status']    = 'failed';
+				$job['lastError'] = $this->format_backfill_error( is_array( $response ) ? $response : array() );
+				$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + $total_accepted;
+				$job['updatedAt'] = gmdate( 'c' );
+				$settings['backfill'] = $job;
+				$this->options_repo->save_settings( $settings );
+				$debug_payload = array(
+					'channel' => $channel,
+					'status'  => $response['status'] ?? 0,
+					'error'   => $response['error'] ?? '',
+					'body'    => $response['body'] ?? array(),
+				);
+				error_log( '[Burrow backfill failure] ' . wp_json_encode( $debug_payload ) );
+				return;
+			}
+
+			$response_body  = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
+			$accepted_count = isset( $response_body['acceptedCount'] ) ? (int) $response_body['acceptedCount'] : count( $channel_events );
+			$rejected_rows  = isset( $response_body['rejected'] ) && is_array( $response_body['rejected'] ) ? $response_body['rejected'] : array();
+			$rejected_count = isset( $response_body['rejectedCount'] ) ? (int) $response_body['rejectedCount'] : count( $rejected_rows );
+			$total_accepted += max( 0, $accepted_count );
+
+			if ( $rejected_count > 0 ) {
+				$first_rejected = reset( $rejected_rows );
+				$reason = is_array( $first_rejected ) && ! empty( $first_rejected['reason'] ) ? (string) $first_rejected['reason'] : 'One or more events were rejected.';
+				$last_error = sprintf( 'Backfill accepted %d and rejected %d %s events. First rejection: %s', $accepted_count, $rejected_count, $channel, $reason );
+			}
 		}
 
-		$response_body          = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
-		$accepted_count         = isset( $response_body['acceptedCount'] ) ? (int) $response_body['acceptedCount'] : count( $events );
-		$rejected_rows          = isset( $response_body['rejected'] ) && is_array( $response_body['rejected'] ) ? $response_body['rejected'] : array();
-		$rejected_count         = isset( $response_body['rejectedCount'] ) ? (int) $response_body['rejectedCount'] : count( $rejected_rows );
-		$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + max( 0, $accepted_count );
-		if ( $rejected_count > 0 ) {
-			$first_rejected = reset( $rejected_rows );
-			$reason         = is_array( $first_rejected ) && ! empty( $first_rejected['reason'] ) ? (string) $first_rejected['reason'] : 'One or more events were rejected.';
-			$job['lastError'] = sprintf( 'Backfill accepted %d and rejected %d events. First rejection: %s', $accepted_count, $rejected_count, $reason );
+		$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + $total_accepted;
+		if ( '' !== $last_error ) {
+			$job['lastError'] = $last_error;
 		}
-		$job['updatedAt']       = gmdate( 'c' );
-		$settings['backfill']   = $job;
+		$job['updatedAt']     = gmdate( 'c' );
+		$settings['backfill'] = $job;
 		$this->options_repo->save_settings( $settings );
+	}
+
+	/**
+	 * Group events by their channel field.
+	 *
+	 * @param array<int,array<string,mixed>> $events Events.
+	 * @return array<string,array<int,array<string,mixed>>>
+	 */
+	private function group_events_by_channel( array $events ) {
+		$grouped = array();
+		foreach ( $events as $event ) {
+			$channel = isset( $event['channel'] ) ? trim( (string) $event['channel'] ) : 'forms';
+			$grouped[ $channel ][] = $event;
+		}
+		return $grouped;
+	}
+
+	/**
+	 * Resolve the correct projectSourceId for a given backfill channel.
+	 *
+	 * @param string              $channel Channel name.
+	 * @param array<string,mixed> $settings Settings.
+	 * @return string|null
+	 */
+	private function resolve_backfill_source_for_channel( $channel, array $settings ) {
+		$routing = isset( $settings['routing'] ) && is_array( $settings['routing'] ) ? $settings['routing'] : array();
+		$source_ids = isset( $routing['sourceIds'] ) && is_array( $routing['sourceIds'] ) ? $routing['sourceIds'] : array();
+
+		if ( 'ecommerce' === $channel && isset( $source_ids['ecommerce'] ) && '' !== trim( (string) $source_ids['ecommerce'] ) ) {
+			return (string) $source_ids['ecommerce'];
+		}
+		if ( 'system' === $channel && isset( $source_ids['system'] ) && '' !== trim( (string) $source_ids['system'] ) ) {
+			return (string) $source_ids['system'];
+		}
+		if ( isset( $source_ids['forms'] ) && '' !== trim( (string) $source_ids['forms'] ) ) {
+			return (string) $source_ids['forms'];
+		}
+		return isset( $routing['projectSourceId'] ) ? (string) $routing['projectSourceId'] : null;
 	}
 
 	/**

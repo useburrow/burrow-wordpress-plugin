@@ -21,18 +21,47 @@ class Burrow_Admin {
 	public function enqueue_scripts() {}
 
 	public function add_settings_page() {
+		$settings  = $this->options_repo->get_settings();
+		$completed = $this->is_onboarding_complete( $settings );
+
+		$parent_slug    = $completed ? 'burrow-dashboard' : 'burrow-setup';
+		$parent_render  = $completed ? 'render_dashboard_page' : 'render_onboarding_page';
+
 		add_menu_page(
 			__( 'Burrow', 'burrow' ),
 			__( 'Burrow', 'burrow' ),
 			'manage_options',
-			'burrow-onboarding',
-			array( $this, 'render_onboarding_page' ),
+			$parent_slug,
+			array( $this, $parent_render ),
 			$this->get_menu_icon_data_uri(),
-			56
+			81
 		);
-		add_submenu_page( 'burrow-onboarding', __( 'Onboarding', 'burrow' ), __( 'Onboarding', 'burrow' ), 'manage_options', 'burrow-onboarding', array( $this, 'render_onboarding_page' ) );
-		add_submenu_page( 'burrow-onboarding', __( 'Operations', 'burrow' ), __( 'Operations', 'burrow' ), 'manage_options', 'burrow-operations', array( $this, 'render_settings_page' ) );
-		add_submenu_page( 'burrow-onboarding', __( 'Outbox', 'burrow' ), __( 'Outbox', 'burrow' ), 'manage_options', 'burrow-outbox', array( $this, 'render_outbox_page' ) );
+
+		if ( $completed ) {
+			add_submenu_page( $parent_slug, __( 'Dashboard', 'burrow' ), __( 'Dashboard', 'burrow' ), 'manage_options', 'burrow-dashboard', array( $this, 'render_dashboard_page' ) );
+			add_submenu_page( $parent_slug, __( 'Setup', 'burrow' ), __( 'Setup', 'burrow' ), 'manage_options', 'burrow-setup', array( $this, 'render_setup_summary_page' ) );
+		} else {
+			add_submenu_page( $parent_slug, __( 'Setup', 'burrow' ), __( 'Setup', 'burrow' ), 'manage_options', 'burrow-setup', array( $this, 'render_onboarding_page' ) );
+		}
+
+		add_submenu_page( $parent_slug, __( 'Outbox', 'burrow' ), __( 'Outbox', 'burrow' ), 'manage_options', 'burrow-outbox', array( $this, 'render_outbox_page' ) );
+	}
+
+	/**
+	 * Whether the onboarding wizard has been fully completed.
+	 */
+	public function is_onboarding_complete( array $settings ) {
+		if ( empty( $settings['api_key'] ) || empty( $settings['routing']['projectId'] ) ) {
+			return false;
+		}
+		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		if ( empty( $selected ) ) {
+			return false;
+		}
+		if ( empty( $settings['contract_sync']['syncedAt'] ) ) {
+			return false;
+		}
+		return true;
 	}
 
 	public function register_settings() {}
@@ -45,7 +74,12 @@ class Burrow_Admin {
 			return;
 		}
 		delete_option( 'burrow_do_activation_redirect' );
-		wp_safe_redirect( admin_url( 'admin.php?page=burrow-onboarding&step=connection' ) );
+		$settings = $this->options_repo->get_settings();
+		if ( $this->is_onboarding_complete( $settings ) ) {
+			wp_safe_redirect( admin_url( 'admin.php?page=burrow-dashboard' ) );
+		} else {
+			wp_safe_redirect( admin_url( 'admin.php?page=burrow-setup&step=connection' ) );
+		}
 		exit;
 	}
 
@@ -187,6 +221,9 @@ class Burrow_Admin {
 			);
 			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 			$message = $this->persist_contract_response( $res );
+			if ( ! empty( $res['ok'] ) ) {
+				do_action( 'burrow_system_stack_snapshot' );
+			}
 			$step    = 'backfill';
 		} elseif ( 'queue_backfill' === $action ) {
 			if ( empty( $settings['contract_sync']['syncedAt'] ) ) {
@@ -195,7 +232,7 @@ class Burrow_Admin {
 				$this->redirect_with_notice( $step, $message );
 			}
 			$preset = isset( $_POST['backfill_window_preset'] ) ? sanitize_key( wp_unslash( $_POST['backfill_window_preset'] ) ) : 'last_30_days';
-			$step       = 'backfill';
+			$step       = 'dashboard';
 			$queue_error = '';
 			$window = $this->resolve_backfill_window_for_preset( $preset );
 			if ( ! empty( $window['error'] ) ) {
@@ -241,7 +278,7 @@ class Burrow_Admin {
 				$message = $queue_error;
 			}
 		} elseif ( 'resume_backfill' === $action ) {
-			$step = 'backfill';
+			$step = 'dashboard';
 			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
 			$job['status']    = 'queued';
 			$job['lastError'] = '';
@@ -254,7 +291,7 @@ class Burrow_Admin {
 			do_action( 'burrow_backfill_worker' );
 			$message = __( 'Backfill resumed from current cursor.', 'burrow' );
 		} elseif ( 'retry_backfill' === $action ) {
-			$step = 'backfill';
+			$step = 'dashboard';
 			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
 			$job['status']          = 'queued';
 			$job['cursor']          = array();
@@ -272,7 +309,7 @@ class Burrow_Admin {
 			do_action( 'burrow_backfill_worker' );
 			$message = __( 'Backfill restarted from beginning.', 'burrow' );
 		} elseif ( 'save_operations_contract' === $action ) {
-			$step            = 'operations';
+			$step            = 'dashboard';
 			$posted_contract = isset( $_POST['operations_contract'] ) ? wp_unslash( $_POST['operations_contract'] ) : array();
 			$contract_key    = sanitize_text_field( (string) wp_unslash( $_POST['operations_contract_key'] ?? '' ) );
 			$error_message   = '';
@@ -309,12 +346,12 @@ class Burrow_Admin {
 		} elseif ( 'replay_failed' === $action ) {
 			$ok      = $this->outbox_repo->replay_failed( (int) ( $_POST['outbox_id'] ?? 0 ) );
 			$message = $ok ? __( 'Failed event queued for replay.', 'burrow' ) : __( 'Unable to replay event.', 'burrow' );
-			$step    = isset( $_POST['return_step'] ) ? sanitize_key( (string) wp_unslash( $_POST['return_step'] ) ) : 'operations';
-			if ( ! in_array( $step, array( 'operations', 'outbox' ), true ) ) {
-				$step = 'operations';
+			$step    = isset( $_POST['return_step'] ) ? sanitize_key( (string) wp_unslash( $_POST['return_step'] ) ) : 'dashboard';
+			if ( ! in_array( $step, array( 'dashboard', 'outbox' ), true ) ) {
+				$step = 'dashboard';
 			}
 		} elseif ( 'save_operations_settings' === $action ) {
-			$step = 'operations';
+			$step = 'dashboard';
 			$retention_days = isset( $_POST['outbox_retention_days'] ) ? (int) $_POST['outbox_retention_days'] : 30;
 			$retention_days = max( 1, min( 365, $retention_days ) );
 			$settings['outbox_retention_days'] = $retention_days;
@@ -466,8 +503,8 @@ class Burrow_Admin {
 				<?php elseif ( 'woocommerce' === $step ) : ?>
 					<?php $this->render_step_heading( 'woocommerce', __( 'WooCommerce Setup', 'burrow' ) ); ?>
 				<?php elseif ( 'backfill' === $step ) : ?>
-					<?php $this->render_step_heading( 'backfill', __( 'Backfill', 'burrow' ) ); ?>
-					<p class="description"><?php esc_html_e( 'Optionally backfill historical form events after contracts are finalized.', 'burrow' ); ?></p>
+					<?php $this->render_step_heading( 'backfill', __( 'Finish', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Your setup is finalized. Optionally queue a historical backfill or head to the Dashboard.', 'burrow' ); ?></p>
 				<?php else : ?>
 					<?php $this->render_step_heading( 'review', __( 'Review & Finish', 'burrow' ) ); ?>
 				<?php endif; ?>
@@ -512,7 +549,7 @@ class Burrow_Admin {
 		<?php
 	}
 
-	public function render_settings_page() {
+	public function render_dashboard_page() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
@@ -524,7 +561,9 @@ class Burrow_Admin {
 			$ingestion_key_prefix = isset( $settings['ingestion_key']['keyPrefix'] ) ? trim( (string) $settings['ingestion_key']['keyPrefix'] ) : '';
 		}
 		$labels        = $this->integration_labels();
+		$selected      = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
 		$contracts     = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+
 		$contract_rows = array();
 		foreach ( $contracts as $key => $contract ) {
 			if ( ! is_array( $contract ) || empty( $contract['enabled'] ) ) {
@@ -550,93 +589,326 @@ class Burrow_Admin {
 			$edit_contract_key = '';
 		}
 		$editing_row = '' !== $edit_contract_key ? $contract_rows[ $edit_contract_key ] : null;
+
+		$job    = $this->refresh_backfill_job_state( $settings );
+		$bf_status = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
+
+		$outbox_counts = array(
+			'pending'  => $this->outbox_repo->count_records( 'pending', '' ),
+			'retrying' => $this->outbox_repo->count_records( 'retrying', '' ),
+			'failed'   => $this->outbox_repo->count_records( 'failed', '' ),
+			'sent'     => $this->outbox_repo->count_records( 'sent', '' ),
+		);
 		?>
 		<div class="wrap">
 			<?php $this->render_admin_notice_from_query(); ?>
-			<?php $this->render_burrow_page_header( __( 'Burrow Operations', 'burrow' ) ); ?>
+			<?php $this->render_burrow_page_header( __( 'Burrow Dashboard', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
-			<p><strong><?php esc_html_e( 'Connected project:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( $settings['routing']['projectId'] ?? '' ) ); ?></p>
-			<?php if ( '' !== $ingestion_key_prefix ) : ?>
-				<p class="description"><?php echo esc_html( sprintf( __( 'Dispatching with project-scoped key prefix: %s', 'burrow' ), $ingestion_key_prefix ) ); ?></p>
-			<?php else : ?>
-				<p class="description"><?php esc_html_e( 'Scoped ingestion key not available yet; dispatch currently uses the configured API key.', 'burrow' ); ?></p>
-			<?php endif; ?>
-			<?php if ( '' !== $project_url ) : ?>
-				<p><a class="button button-secondary" href="<?php echo esc_url( $project_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'View in Burrow', 'burrow' ); ?></a></p>
-			<?php endif; ?>
-			<p class="description"><?php esc_html_e( 'Queue metrics and delivery details live in the dedicated Outbox view.', 'burrow' ); ?></p>
+			<style>
+				.burrow-dashboard-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; max-width:900px; margin:16px 0; }
+				.burrow-card { background:#fff; border:1px solid #dcdcde; border-radius:6px; padding:16px 18px; }
+				.burrow-card h3 { margin:0 0 8px; font-size:14px; color:#1d2327; }
+				.burrow-card .burrow-card-value { font-size:22px; font-weight:600; color:#2271b1; }
+				.burrow-card .description { margin-top:6px; }
+				.burrow-section { margin-top:28px; }
+				.burrow-section > h2 { margin:0 0 10px; }
+				.burrow-integration-summary { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0; }
+				.burrow-integration-badge { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; background:#f0f6fc; border:1px solid #c3d0e0; border-radius:4px; font-size:13px; }
+				.burrow-integration-badge .burrow-integration-icon, .burrow-integration-badge .dashicons { width:16px; height:16px; font-size:16px; line-height:16px; }
+				.burrow-integration-badge .burrow-menu-glyph { width:16px; height:16px; object-fit:contain; filter:grayscale(1) brightness(0) saturate(100%) invert(34%) sepia(89%) saturate(955%) hue-rotate(178deg) brightness(90%) contrast(91%); }
+			</style>
 
-			<h2 style="margin-top:20px;"><?php esc_html_e( 'Outbox Settings', 'burrow' ); ?></h2>
-			<form method="post" style="max-width:560px;">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="save_operations_settings" />
-				<table class="form-table" role="presentation">
-					<tr>
-						<th scope="row"><label for="outbox_retention_days"><?php esc_html_e( 'Auto-delete sent/failed after', 'burrow' ); ?></label></th>
-						<td>
-							<input id="outbox_retention_days" name="outbox_retention_days" type="number" min="1" max="365" step="1" value="<?php echo esc_attr( (string) $retention_days ); ?>" class="small-text" />
-							<span><?php esc_html_e( 'days', 'burrow' ); ?></span>
-							<p class="description"><?php esc_html_e( 'Cleanup runs daily and removes sent/failed records older than this retention window.', 'burrow' ); ?></p>
-						</td>
-					</tr>
+			<!-- Connection overview -->
+			<div class="burrow-dashboard-grid">
+				<div class="burrow-card">
+					<h3><?php esc_html_e( 'Project', 'burrow' ); ?></h3>
+					<div class="burrow-card-value"><?php echo esc_html( '' !== (string) ( $settings['routing']['projectId'] ?? '' ) ? substr( (string) $settings['routing']['projectId'], 0, 8 ) . '...' : '-' ); ?></div>
+					<?php if ( '' !== $project_url ) : ?>
+						<p class="description"><a href="<?php echo esc_url( $project_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'View in Burrow &rarr;', 'burrow' ); ?></a></p>
+					<?php endif; ?>
+				</div>
+				<div class="burrow-card">
+					<h3><?php esc_html_e( 'Ingestion Key', 'burrow' ); ?></h3>
+					<div class="burrow-card-value"><?php echo esc_html( '' !== $ingestion_key_prefix ? $ingestion_key_prefix : '-' ); ?></div>
+					<p class="description"><?php echo esc_html( '' !== $ingestion_key_prefix ? __( 'Project-scoped', 'burrow' ) : __( 'Not yet linked', 'burrow' ) ); ?></p>
+				</div>
+				<div class="burrow-card">
+					<h3><?php esc_html_e( 'Outbox', 'burrow' ); ?></h3>
+					<div class="burrow-card-value"><?php echo esc_html( (string) ( $outbox_counts['pending'] + $outbox_counts['retrying'] ) ); ?></div>
+					<p class="description">
+						<?php
+						echo esc_html( sprintf(
+							__( '%d pending, %d failed, %d sent', 'burrow' ),
+							$outbox_counts['pending'] + $outbox_counts['retrying'],
+							$outbox_counts['failed'],
+							$outbox_counts['sent']
+						) );
+						?>
+						&mdash; <a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-outbox' ) ); ?>"><?php esc_html_e( 'View', 'burrow' ); ?></a>
+					</p>
+				</div>
+				<div class="burrow-card">
+					<h3><?php esc_html_e( 'Backfill', 'burrow' ); ?></h3>
+					<div class="burrow-card-value"><?php echo $this->render_status_badge( $bf_status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></div>
+					<?php if ( ! empty( $job['processedEvents'] ) ) : ?>
+						<p class="description"><?php echo esc_html( sprintf( __( '%d events processed', 'burrow' ), (int) $job['processedEvents'] ) ); ?></p>
+					<?php endif; ?>
+				</div>
+			</div>
+
+			<!-- Integrations overview -->
+			<div class="burrow-section">
+				<h2><?php esc_html_e( 'Active Integrations', 'burrow' ); ?></h2>
+				<?php if ( empty( $selected ) ) : ?>
+					<p class="description"><?php esc_html_e( 'No integrations configured yet.', 'burrow' ); ?>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&step=integrations' ) ); ?>"><?php esc_html_e( 'Run setup', 'burrow' ); ?></a>
+					</p>
+				<?php else : ?>
+					<div class="burrow-integration-summary">
+						<?php foreach ( $selected as $integration_key ) :
+							$integration_key = (string) $integration_key;
+							$icon = $this->get_integration_icon_markup( $integration_key );
+							$label = (string) ( $labels[ $integration_key ] ?? $integration_key );
+							$badge_detail = '';
+							if ( 'woocommerce' === $integration_key ) {
+								$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+								$badge_detail = 'track' === $woo_mode ? __( 'Orders + Items', 'burrow' ) : __( 'Off', 'burrow' );
+							} else {
+								$count = 0;
+								foreach ( $contracts as $c ) {
+									if ( is_array( $c ) && ! empty( $c['enabled'] ) && (string) ( $c['provider'] ?? '' ) === $integration_key ) {
+										$count++;
+									}
+								}
+								$badge_detail = sprintf( _n( '%d form', '%d forms', $count, 'burrow' ), $count );
+							}
+							?>
+							<span class="burrow-integration-badge">
+								<?php echo $icon; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+								<strong><?php echo esc_html( $label ); ?></strong>
+								<span class="description"><?php echo esc_html( $badge_detail ); ?></span>
+							</span>
+						<?php endforeach; ?>
+					</div>
+				<?php endif; ?>
+			</div>
+
+			<!-- Active form contracts -->
+			<div class="burrow-section">
+				<h2><?php esc_html_e( 'Form Contracts', 'burrow' ); ?></h2>
+				<table class="widefat striped" style="max-width:1200px;">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Provider', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Form', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Form ID', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Mode', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Icon', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Fields', 'burrow' ); ?></th>
+							<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php if ( empty( $contract_rows ) ) : ?>
+							<tr><td colspan="7"><?php esc_html_e( 'No active contracts configured.', 'burrow' ); ?></td></tr>
+						<?php else : ?>
+							<?php foreach ( $contract_rows as $row ) : ?>
+								<tr>
+									<td><?php echo esc_html( $row['provider'] ); ?></td>
+									<td><?php echo esc_html( $row['formName'] ); ?></td>
+									<td><?php echo esc_html( $row['externalFormId'] ); ?></td>
+									<td><?php echo esc_html( $this->format_tracking_mode_label( (string) $row['mode'] ) ); ?></td>
+									<td><?php echo '' !== (string) $row['icon'] ? '<code>' . esc_html( (string) $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
+									<td><?php echo esc_html( (string) (int) $row['mappingCount'] ); ?></td>
+									<td>
+										<?php if ( $edit_contract_key === (string) $row['contractKey'] ) : ?>
+											<a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>"><?php esc_html_e( 'Cancel', 'burrow' ); ?></a>
+										<?php else : ?>
+											<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'burrow-dashboard', 'edit_contract' => rawurlencode( (string) $row['contractKey'] ) ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Edit', 'burrow' ); ?></a>
+										<?php endif; ?>
+									</td>
+								</tr>
+							<?php endforeach; ?>
+						<?php endif; ?>
+					</tbody>
 				</table>
-				<?php submit_button( __( 'Save Operations Settings', 'burrow' ), 'secondary', 'submit', false ); ?>
+				<?php if ( is_array( $editing_row ) ) : ?>
+					<?php $this->render_operations_contract_editor( $editing_row ); ?>
+				<?php endif; ?>
+			</div>
+
+			<!-- Backfill -->
+			<div class="burrow-section">
+				<h2><?php esc_html_e( 'Data Backfill', 'burrow' ); ?></h2>
+				<?php $this->render_dashboard_backfill_section( $settings, $job, $bf_status ); ?>
+			</div>
+
+			<!-- Settings -->
+			<div class="burrow-section">
+				<h2><?php esc_html_e( 'Settings', 'burrow' ); ?></h2>
+				<form method="post" style="max-width:560px;">
+					<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+					<input type="hidden" name="burrow_action" value="save_operations_settings" />
+					<table class="form-table" role="presentation">
+						<tr>
+							<th scope="row"><label for="outbox_retention_days"><?php esc_html_e( 'Outbox retention', 'burrow' ); ?></label></th>
+							<td>
+								<input id="outbox_retention_days" name="outbox_retention_days" type="number" min="1" max="365" step="1" value="<?php echo esc_attr( (string) $retention_days ); ?>" class="small-text" />
+								<span><?php esc_html_e( 'days', 'burrow' ); ?></span>
+								<p class="description"><?php esc_html_e( 'Sent and failed records are cleaned up daily after this retention window.', 'burrow' ); ?></p>
+							</td>
+						</tr>
+					</table>
+					<?php submit_button( __( 'Save Settings', 'burrow' ), 'secondary', 'submit', false ); ?>
+				</form>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render the backfill controls and status within the dashboard.
+	 */
+	private function render_dashboard_backfill_section( array $settings, array $job, $status ) {
+		$support_notes = $this->build_backfill_support_notes( $settings );
+		$preset_labels = $this->backfill_window_presets();
+		$current_preset = isset( $job['windowPreset'] ) ? sanitize_key( (string) $job['windowPreset'] ) : 'last_30_days';
+		?>
+		<?php if ( ! empty( $support_notes ) ) : ?>
+			<ul class="description" style="margin:0 0 10px 18px;list-style:disc;">
+				<?php foreach ( $support_notes as $note ) : ?>
+					<li><?php echo wp_kses( (string) $note, array( 'a' => array( 'href' => array(), 'target' => array(), 'rel' => array() ) ) ); ?></li>
+				<?php endforeach; ?>
+			</ul>
+		<?php endif; ?>
+
+		<?php if ( in_array( $status, array( 'queued', 'running' ), true ) ) : ?>
+			<p>
+				<?php echo $this->render_status_badge( $status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<?php echo esc_html( sprintf( __( '%d / %d sources processed, %d events sent', 'burrow' ), (int) ( $job['completedForms'] ?? 0 ), (int) ( $job['totalForms'] ?? 0 ), (int) ( $job['processedEvents'] ?? 0 ) ) ); ?>
+			</p>
+			<?php if ( ! empty( $job['updatedAt'] ) ) : ?>
+				<p class="description"><?php echo esc_html( sprintf( __( 'Last update: %s', 'burrow' ), (string) $job['updatedAt'] ) ); ?></p>
+			<?php endif; ?>
+
+		<?php elseif ( 'failed' === $status ) : ?>
+			<p>
+				<?php echo $this->render_status_badge( 'failed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<?php if ( ! empty( $job['lastError'] ) ) : ?>
+					<span class="description"><?php echo esc_html( (string) $job['lastError'] ); ?></span>
+				<?php endif; ?>
+			</p>
+			<p>
+				<form method="post" style="display:inline-block;margin-right:6px;">
+					<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+					<input type="hidden" name="burrow_action" value="resume_backfill" />
+					<button type="submit" class="button button-secondary"><?php esc_html_e( 'Resume', 'burrow' ); ?></button>
+				</form>
+				<form method="post" style="display:inline-block;">
+					<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+					<input type="hidden" name="burrow_action" value="retry_backfill" />
+					<button type="submit" class="button button-secondary"><?php esc_html_e( 'Retry from Start', 'burrow' ); ?></button>
+				</form>
+			</p>
+
+		<?php elseif ( 'completed' === $status ) : ?>
+			<p>
+				<?php echo $this->render_status_badge( 'completed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<?php echo esc_html( sprintf( __( '%d events processed', 'burrow' ), (int) ( $job['processedEvents'] ?? 0 ) ) ); ?>
+				<?php if ( ! empty( $job['completedAt'] ) ) : ?>
+					<span class="description">&mdash; <?php echo esc_html( (string) $job['completedAt'] ); ?></span>
+				<?php endif; ?>
+			</p>
+			<form method="post" style="display:inline-block;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="retry_backfill" />
+				<button type="submit" class="button button-secondary"><?php esc_html_e( 'Run Again', 'burrow' ); ?></button>
 			</form>
 
-			<h2 style="margin-top:20px;"><?php esc_html_e( 'Active Form Contracts', 'burrow' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'Select one contract to edit. This mirrors onboarding-style mapping controls without leaving Operations.', 'burrow' ); ?></p>
-			<table class="widefat striped" style="max-width:1200px;">
-				<thead>
-					<tr>
-						<th><?php esc_html_e( 'Provider', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Form', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Form ID', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Mode', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Icon override', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Mapped fields', 'burrow' ); ?></th>
-						<th><?php esc_html_e( 'Action', 'burrow' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php if ( empty( $contract_rows ) ) : ?>
-						<tr><td colspan="7"><?php esc_html_e( 'No active contracts configured yet.', 'burrow' ); ?></td></tr>
-					<?php else : ?>
-						<?php foreach ( $contract_rows as $row ) : ?>
-							<tr>
-								<td><?php echo esc_html( $row['provider'] ); ?></td>
-								<td><?php echo esc_html( $row['formName'] ); ?></td>
-								<td><?php echo esc_html( $row['externalFormId'] ); ?></td>
-								<td><?php echo esc_html( $this->format_tracking_mode_label( (string) $row['mode'] ) ); ?></td>
-								<td><?php echo '' !== (string) $row['icon'] ? '<code>' . esc_html( (string) $row['icon'] ) . '</code>' : '<span class="description">' . esc_html__( 'SDK default', 'burrow' ) . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
-								<td><?php echo esc_html( (string) (int) $row['mappingCount'] ); ?></td>
-								<td>
-									<?php if ( $edit_contract_key === (string) $row['contractKey'] ) : ?>
-										<a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-operations' ) ); ?>"><?php esc_html_e( 'Cancel', 'burrow' ); ?></a>
-									<?php else : ?>
-										<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'burrow-operations', 'edit_contract' => rawurlencode( (string) $row['contractKey'] ) ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Edit', 'burrow' ); ?></a>
-									<?php endif; ?>
-								</td>
-							</tr>
+		<?php else : ?>
+			<form method="post">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="queue_backfill" />
+				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+					<select name="backfill_window_preset">
+						<?php foreach ( $preset_labels as $value => $label ) : ?>
+							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $value, $current_preset ); ?>><?php echo esc_html( $label ); ?></option>
 						<?php endforeach; ?>
-					<?php endif; ?>
-				</tbody>
+					</select>
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Queue Backfill', 'burrow' ); ?></button>
+				</div>
+			</form>
+		<?php endif; ?>
+		<?php
+	}
+
+	/**
+	 * Render the Setup Summary page (shown when onboarding is already complete).
+	 */
+	public function render_setup_summary_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$settings = $this->options_repo->get_settings();
+		$labels   = $this->integration_labels();
+		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+		$contracts = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
+		$project_id = (string) ( $settings['routing']['projectId'] ?? '' );
+		?>
+		<div class="wrap">
+			<?php $this->render_admin_notice_from_query(); ?>
+			<?php $this->render_burrow_page_header( __( 'Burrow Setup', 'burrow' ) ); ?>
+			<?php $this->render_status_badge_styles(); ?>
+
+			<div class="notice notice-success" style="margin:12px 0 20px;"><p><?php esc_html_e( 'Onboarding is complete. Your plugin is connected and configured.', 'burrow' ); ?></p></div>
+
+			<table class="form-table" role="presentation">
+				<tr>
+					<th><?php esc_html_e( 'Connected Project', 'burrow' ); ?></th>
+					<td><code><?php echo esc_html( '' !== $project_id ? $project_id : '-' ); ?></code></td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Base URL', 'burrow' ); ?></th>
+					<td><code><?php echo esc_html( (string) ( $settings['base_url'] ?? '-' ) ); ?></code></td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Integrations', 'burrow' ); ?></th>
+					<td>
+						<?php if ( empty( $selected ) ) : ?>
+							<span class="description"><?php esc_html_e( 'None', 'burrow' ); ?></span>
+						<?php else : ?>
+							<?php foreach ( $selected as $key ) : ?>
+								<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;">
+									<?php echo $this->get_integration_icon_markup( (string) $key ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+									<?php echo esc_html( (string) ( $labels[ (string) $key ] ?? $key ) ); ?>
+								</span>
+							<?php endforeach; ?>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Active Contracts', 'burrow' ); ?></th>
+					<td>
+						<?php
+						$enabled_count = 0;
+						foreach ( $contracts as $c ) {
+							if ( is_array( $c ) && ! empty( $c['enabled'] ) ) {
+								$enabled_count++;
+							}
+						}
+						echo esc_html( (string) $enabled_count );
+						?>
+					</td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Contracts Synced', 'burrow' ); ?></th>
+					<td><?php echo esc_html( (string) ( $settings['contract_sync']['syncedAt'] ?? '-' ) ); ?></td>
+				</tr>
 			</table>
 
-			<?php if ( is_array( $editing_row ) ) : ?>
-				<?php $this->render_operations_contract_editor( $editing_row ); ?>
-			<?php endif; ?>
-
-			<p class="description" style="margin-top:10px;">
-				<?php
-				printf(
-					/* translators: %s outbox page URL */
-					wp_kses(
-						__( 'Need record-level failures or replays? Use the dedicated <a href="%s">Outbox</a> page.', 'burrow' ),
-						array( 'a' => array( 'href' => array() ) )
-					),
-					esc_url( admin_url( 'admin.php?page=burrow-outbox&status=failed' ) )
-				);
-				?>
+			<p style="margin-top:16px;">
+				<a class="button button-secondary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&step=connection' ) ); ?>"><?php esc_html_e( 'Reconfigure', 'burrow' ); ?></a>
+				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>" style="margin-left:6px;"><?php esc_html_e( 'Go to Dashboard', 'burrow' ); ?></a>
 			</p>
 		</div>
 		<?php
@@ -774,7 +1046,7 @@ class Burrow_Admin {
 			$position++;
 			$url = add_query_arg(
 				array(
-					'page' => 'burrow-onboarding',
+					'page' => 'burrow-setup',
 					'step' => $key,
 				),
 				admin_url( 'admin.php' )
@@ -793,7 +1065,7 @@ class Burrow_Admin {
 		if ( '' !== $prev_step ) {
 			$prev_url = add_query_arg(
 				array(
-					'page' => 'burrow-onboarding',
+					'page' => 'burrow-setup',
 					'step' => $prev_step,
 				),
 				admin_url( 'admin.php' )
@@ -912,7 +1184,7 @@ class Burrow_Admin {
 				const boxes = Array.from(document.querySelectorAll('.burrow-integration-checkbox'));
 				const submit = document.querySelector('form [type="submit"]');
 				const timeline = document.querySelector('.burrow-wizard-steps');
-				const adminBase = <?php echo wp_json_encode( admin_url( 'admin.php?page=burrow-onboarding&step=' ) ); ?>;
+				const adminBase = <?php echo wp_json_encode( admin_url( 'admin.php?page=burrow-setup&step=' ) ); ?>;
 				const timelineLabels = <?php echo wp_json_encode( $timeline_labels ); ?>;
 				const providerOrder = <?php echo wp_json_encode( $provider_order ); ?>;
 				if (!master || !boxes.length) return;
@@ -1340,68 +1612,36 @@ class Burrow_Admin {
 	}
 
 	private function render_backfill_step( array $settings ) {
-		$job          = $this->refresh_backfill_job_state( $settings );
-		$status       = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
-		$preset       = isset( $job['windowPreset'] ) ? sanitize_key( (string) $job['windowPreset'] ) : 'last_30_days';
-		$preset_labels = $this->backfill_window_presets();
 		$support_notes = $this->build_backfill_support_notes( $settings );
 		?>
+		<p><?php esc_html_e( 'Setup is complete. You can optionally queue a historical data backfill now, or do it later from the Dashboard.', 'burrow' ); ?></p>
+		<?php if ( ! empty( $support_notes ) ) : ?>
+			<ul class="description" style="margin:0 0 12px 18px;list-style:disc;">
+				<?php foreach ( $support_notes as $note ) : ?>
+					<li><?php echo wp_kses( (string) $note, array( 'a' => array( 'href' => array(), 'target' => array(), 'rel' => array() ) ) ); ?></li>
+				<?php endforeach; ?>
+			</ul>
+		<?php endif; ?>
 		<form method="post">
 			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
 			<input type="hidden" name="burrow_action" value="queue_backfill" />
-			<?php if ( ! empty( $support_notes ) ) : ?>
-				<ul class="description" style="margin:0 0 12px 18px;list-style:disc;">
-					<?php foreach ( $support_notes as $note ) : ?>
-						<li><?php echo wp_kses( (string) $note, array( 'a' => array( 'href' => array(), 'target' => array(), 'rel' => array() ) ) ); ?></li>
-					<?php endforeach; ?>
-				</ul>
-			<?php endif; ?>
 			<table class="form-table" role="presentation">
 				<tr>
 					<th><label for="backfill_window_preset"><?php esc_html_e( 'Window', 'burrow' ); ?></label></th>
 					<td>
 						<select id="backfill_window_preset" name="backfill_window_preset">
-							<?php foreach ( $preset_labels as $value => $label ) : ?>
-								<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $value, $preset ); ?>><?php echo esc_html( $label ); ?></option>
+							<?php foreach ( $this->backfill_window_presets() as $value => $label ) : ?>
+								<option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
 							<?php endforeach; ?>
 						</select>
-						<p class="description"><?php esc_html_e( 'Predefined historical windows for backfill runs.', 'burrow' ); ?></p>
 					</td>
 				</tr>
 			</table>
-			<?php submit_button( __( 'Queue Backfill Job', 'burrow' ) ); ?>
+			<p>
+				<?php submit_button( __( 'Queue Backfill Now', 'burrow' ), 'secondary', 'submit', false ); ?>
+				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>" style="margin-left:8px;"><?php esc_html_e( 'Go to Dashboard', 'burrow' ); ?></a>
+			</p>
 		</form>
-
-		<hr />
-		<h3><?php esc_html_e( 'Backfill Status', 'burrow' ); ?></h3>
-		<p><strong><?php esc_html_e( 'Status:', 'burrow' ); ?></strong> <?php echo esc_html( $status ); ?></p>
-		<?php if ( ! empty( $job['updatedAt'] ) ) : ?>
-			<p><strong><?php esc_html_e( 'Last updated:', 'burrow' ); ?></strong> <?php echo esc_html( (string) $job['updatedAt'] ); ?></p>
-		<?php endif; ?>
-		<p><strong><?php esc_html_e( 'Forms completed:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['completedForms'] ?? 0 ) ) ); ?> / <?php echo esc_html( (string) ( (int) ( $job['totalForms'] ?? 0 ) ) ); ?></p>
-		<p><strong><?php esc_html_e( 'Processed events:', 'burrow' ); ?></strong> <?php echo esc_html( (string) ( (int) ( $job['processedEvents'] ?? 0 ) ) ); ?></p>
-		<?php if ( ! empty( $job['lastError'] ) ) : ?>
-			<p><strong><?php esc_html_e( 'Last error:', 'burrow' ); ?></strong> <?php echo esc_html( (string) $job['lastError'] ); ?></p>
-		<?php endif; ?>
-
-		<?php if ( 'failed' === $status ) : ?>
-			<form method="post" style="display:inline-block;margin-right:8px;">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="resume_backfill" />
-				<?php submit_button( __( 'Resume', 'burrow' ), 'secondary', 'submit', false ); ?>
-			</form>
-			<form method="post" style="display:inline-block;">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="retry_backfill" />
-				<?php submit_button( __( 'Retry from Start', 'burrow' ), 'secondary', 'submit', false ); ?>
-			</form>
-		<?php elseif ( 'completed' === $status ) : ?>
-			<form method="post" style="display:inline-block;">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="retry_backfill" />
-				<?php submit_button( __( 'Run Again', 'burrow' ), 'secondary', 'submit', false ); ?>
-			</form>
-		<?php endif; ?>
 		<?php
 	}
 
@@ -1562,14 +1802,14 @@ class Burrow_Admin {
 
 	private function redirect_with_notice( $step, $message ) {
 		$is_error = false !== stripos( $message, 'failed' ) || false !== stripos( $message, 'unable' ) || false !== stripos( $message, 'please' ) || false !== stripos( $message, 'error' );
-		if ( 'operations' === $step ) {
-			$page = 'burrow-operations';
+		if ( 'dashboard' === $step || 'operations' === $step ) {
+			$page = 'burrow-dashboard';
 		} elseif ( 'outbox' === $step ) {
 			$page = 'burrow-outbox';
 		} else {
-			$page = 'burrow-onboarding';
+			$page = 'burrow-setup';
 		}
-		$url      = add_query_arg( array( 'page' => $page, 'step' => $step, 'burrow_notice' => rawurlencode( $message ), 'burrow_error' => $is_error ? '1' : '0' ), admin_url( 'admin.php' ) );
+		$url = add_query_arg( array( 'page' => $page, 'step' => $step, 'burrow_notice' => rawurlencode( $message ), 'burrow_error' => $is_error ? '1' : '0' ), admin_url( 'admin.php' ) );
 		wp_safe_redirect( $url );
 		exit;
 	}
@@ -1632,10 +1872,14 @@ class Burrow_Admin {
 				border: 1px solid transparent;
 			}
 			.burrow-status-pending { background: #fff7ed; color: #9a3412; border-color: #fdba74; }
+			.burrow-status-queued { background: #fff7ed; color: #9a3412; border-color: #fdba74; }
 			.burrow-status-retrying { background: #eff6ff; color: #1d4ed8; border-color: #93c5fd; }
+			.burrow-status-running { background: #eff6ff; color: #1d4ed8; border-color: #93c5fd; }
 			.burrow-status-failed { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
 			.burrow-status-sent,
+			.burrow-status-completed,
 			.burrow-status-success { background: #ecfdf5; color: #047857; border-color: #86efac; }
+			.burrow-status-idle,
 			.burrow-status-unknown { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
 		</style>
 		<?php
@@ -1643,7 +1887,7 @@ class Burrow_Admin {
 
 	private function render_status_badge( $status, $count = null ) {
 		$status = sanitize_key( (string) $status );
-		$class  = in_array( $status, array( 'pending', 'retrying', 'failed', 'sent', 'success' ), true ) ? $status : 'unknown';
+		$class  = in_array( $status, array( 'pending', 'queued', 'retrying', 'running', 'failed', 'sent', 'completed', 'success', 'idle' ), true ) ? $status : 'unknown';
 		$label  = ucfirst( str_replace( '_', ' ', $status ) );
 		if ( '' === $label ) {
 			$label = __( 'Unknown', 'burrow' );
@@ -2044,7 +2288,7 @@ class Burrow_Admin {
 			$steps['woocommerce'] = 'WooCommerce';
 		}
 		$steps['review'] = 'Review';
-		$steps['backfill'] = 'Backfill';
+		$steps['backfill'] = 'Finish';
 		return $steps;
 	}
 
@@ -2378,7 +2622,7 @@ class Burrow_Admin {
 			'project'      => 'dashicons-portfolio',
 			'integrations' => 'dashicons-admin-plugins',
 			'review'       => 'dashicons-yes-alt',
-			'backfill'     => 'dashicons-backup',
+			'backfill'     => 'dashicons-flag',
 		);
 		$klass = isset( $dashicons[ $step ] ) ? $dashicons[ $step ] : 'dashicons-admin-generic';
 		return '<span class="dashicons burrow-integration-icon ' . esc_attr( $klass ) . '" aria-hidden="true"></span>';

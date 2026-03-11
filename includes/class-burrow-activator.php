@@ -19,6 +19,7 @@ class Burrow_Activator {
 		self::create_outbox_table();
 		self::schedule_cron_jobs();
 		update_option( 'burrow_version', BURROW_VERSION );
+		update_option( 'burrow_do_activation_redirect', true );
 	}
 
 	/**

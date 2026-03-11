@@ -22,7 +22,7 @@ class WooCommerceProvider implements EcommerceProviderInterface {
 			$product = $item->get_product();
 			$items[] = array(
 				'lineItemId' => (string) $item_id,
-				'productId'  => $product ? (string) $product->get_slug() : '',
+				'productId'  => $product ? (string) $product->get_id() : '',
 				'productName'=> (string) $item->get_name(),
 				'quantity'   => (int) $item->get_quantity(),
 				'unitPrice'  => (float) $order->get_item_total( $item, false, false ),
