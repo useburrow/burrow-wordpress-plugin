@@ -550,6 +550,10 @@ class Burrow_Admin {
 						<?php $this->render_simple_forms_provider_step( 'ninja-forms', $this->list_ninja_forms() ); ?>
 					<?php elseif ( 'fluent-forms' === $step ) : ?>
 						<?php $this->render_simple_forms_provider_step( 'fluent-forms', $this->list_fluent_forms() ); ?>
+					<?php elseif ( 'wpforms' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'wpforms', $this->list_wpforms() ); ?>
+					<?php elseif ( 'formidable-forms' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'formidable-forms', $this->list_formidable_forms() ); ?>
 					<?php elseif ( 'woocommerce' === $step ) : ?>
 						<?php $this->render_woocommerce_step(); ?>
 					<?php elseif ( 'backfill' === $step ) : ?>
@@ -1498,7 +1502,7 @@ class Burrow_Admin {
 		if ( empty( $forms ) ) {
 			echo '<p>' . esc_html__( 'No active forms found for this provider.', 'burrow' ) . '</p>';
 		}
-		$supports_custom_fields = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true );
+		$supports_custom_fields = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ), true );
 		?>
 		<form method="post">
 			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
@@ -1529,6 +1533,10 @@ class Burrow_Admin {
 					$provider_fields = $this->list_ninja_form_fields( $form_id );
 				} elseif ( 'fluent-forms' === $provider ) {
 					$provider_fields = $this->list_fluent_form_fields( $form_id );
+				} elseif ( 'wpforms' === $provider ) {
+					$provider_fields = $this->list_wpforms_fields( $form_id );
+				} elseif ( 'formidable-forms' === $provider ) {
+					$provider_fields = $this->list_formidable_form_fields( $form_id );
 				}
 				?>
 				<div class="burrow-provider-form-block <?php echo $supports_custom_fields ? 'burrow-mapped-provider-form-block' : ''; ?>" data-form-id="<?php echo esc_attr( $form_id ); ?>">
@@ -2214,7 +2222,7 @@ class Burrow_Admin {
 				continue;
 			}
 			$mode = isset( $form['mode'] ) ? sanitize_key( (string) $form['mode'] ) : 'off';
-			$allowed_modes = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true )
+			$allowed_modes = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ), true )
 				? array( 'off', 'count_only', 'custom_fields' )
 				: array( 'off', 'count_only' );
 			if ( ! in_array( $mode, $allowed_modes, true ) ) {
@@ -2404,6 +2412,12 @@ class Burrow_Admin {
 		if ( defined( 'FLUENTFORM' ) || class_exists( '\FluentForm\App' ) ) {
 			$out[] = 'fluent-forms';
 		}
+		if ( function_exists( 'wpforms' ) ) {
+			$out[] = 'wpforms';
+		}
+		if ( class_exists( '\FrmAppHelper' ) ) {
+			$out[] = 'formidable-forms';
+		}
 		return $out;
 	}
 
@@ -2417,22 +2431,26 @@ class Burrow_Admin {
 
 	private function integration_labels() {
 		return array(
-			'gravity-forms'  => 'Gravity Forms',
-			'ninja-forms'    => 'Ninja Forms',
-			'contact-form-7' => 'Contact Form 7',
-			'fluent-forms'   => 'Fluent Forms',
-			'woocommerce'    => 'WooCommerce',
+			'gravity-forms'    => 'Gravity Forms',
+			'ninja-forms'      => 'Ninja Forms',
+			'contact-form-7'   => 'Contact Form 7',
+			'fluent-forms'     => 'Fluent Forms',
+			'wpforms'          => 'WPForms',
+			'formidable-forms' => 'Formidable Forms',
+			'woocommerce'      => 'WooCommerce',
 		);
 	}
 
 	private function get_integration_icon_markup( $integration ) {
 		$fallback_class = $this->get_integration_fallback_icon_class( $integration );
 		$menu_icons = array(
-			'gravity-forms'  => array( 'gf_edit_forms', 'gravityforms' ),
-			'ninja-forms'    => array( 'ninja-forms', 'nf-dashboard' ),
-			'contact-form-7' => array( 'wpcf7', 'contact' ),
-			'fluent-forms'   => array( 'fluent_forms', 'fluent_forms_settings' ),
-			'woocommerce'    => array( 'woocommerce' ),
+			'gravity-forms'    => array( 'gf_edit_forms', 'gravityforms' ),
+			'ninja-forms'      => array( 'ninja-forms', 'nf-dashboard' ),
+			'contact-form-7'   => array( 'wpcf7', 'contact' ),
+			'fluent-forms'     => array( 'fluent_forms', 'fluent_forms_settings' ),
+			'wpforms'          => array( 'wpforms-overview', 'wpforms-entries' ),
+			'formidable-forms' => array( 'formidable', 'frm_form' ),
+			'woocommerce'      => array( 'woocommerce' ),
 		);
 
 		$menu_icon = $this->resolve_menu_icon_value( $menu_icons[ $integration ] ?? array() );
@@ -2450,11 +2468,13 @@ class Burrow_Admin {
 
 	private function get_integration_fallback_icon_class( $integration ) {
 		$fallback = array(
-			'gravity-forms'  => 'dashicons-feedback',
-			'ninja-forms'    => 'dashicons-email-alt2',
-			'contact-form-7' => 'dashicons-email',
-			'fluent-forms'   => 'dashicons-editor-table',
-			'woocommerce'    => 'dashicons-cart',
+			'gravity-forms'    => 'dashicons-feedback',
+			'ninja-forms'      => 'dashicons-email-alt2',
+			'contact-form-7'   => 'dashicons-email',
+			'fluent-forms'     => 'dashicons-editor-table',
+			'wpforms'          => 'dashicons-list-view',
+			'formidable-forms' => 'dashicons-forms',
+			'woocommerce'      => 'dashicons-cart',
 		);
 		return isset( $fallback[ $integration ] ) ? $fallback[ $integration ] : 'dashicons-admin-plugins';
 	}
@@ -2648,7 +2668,7 @@ class Burrow_Admin {
 	}
 
 	private function operations_provider_supports_custom_fields( $provider_key ) {
-		return in_array( sanitize_key( (string) $provider_key ), array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true );
+		return in_array( sanitize_key( (string) $provider_key ), array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ), true );
 	}
 
 	private function operations_provider_fields( $provider_key, $form_id, array $contract ) {
@@ -2665,6 +2685,12 @@ class Burrow_Admin {
 		}
 		if ( 'fluent-forms' === $provider_key ) {
 			return $this->list_fluent_form_fields( $wp_form_id );
+		}
+		if ( 'wpforms' === $provider_key ) {
+			return $this->list_wpforms_fields( $wp_form_id );
+		}
+		if ( 'formidable-forms' === $provider_key ) {
+			return $this->list_formidable_form_fields( $wp_form_id );
 		}
 		return isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
 	}
@@ -3141,6 +3167,120 @@ class Burrow_Admin {
 				$this->collect_fluent_fields_from_schema( $child, $fields );
 			}
 		}
+	}
+
+	private function list_wpforms() {
+		if ( ! function_exists( 'wpforms' ) ) {
+			return array();
+		}
+		$forms = wpforms()->get( 'form' );
+		if ( ! is_object( $forms ) || ! method_exists( $forms, 'get' ) ) {
+			return array();
+		}
+		$posts = $forms->get( '', array( 'orderby' => 'title', 'order' => 'ASC' ) );
+		if ( ! is_array( $posts ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $posts as $post ) {
+			if ( ! is_object( $post ) && ! is_a( $post, 'WP_Post' ) ) {
+				continue;
+			}
+			$out[] = array(
+				'id'    => (string) $post->ID,
+				'title' => (string) ( $post->post_title ?? sprintf( 'Form %s', $post->ID ) ),
+			);
+		}
+		return $out;
+	}
+
+	private function list_wpforms_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 || ! function_exists( 'wpforms' ) ) {
+			return array();
+		}
+		$form_handler = wpforms()->get( 'form' );
+		if ( ! is_object( $form_handler ) || ! method_exists( $form_handler, 'get' ) ) {
+			return array();
+		}
+		$form = $form_handler->get( $form_id );
+		if ( ! is_object( $form ) || empty( $form->post_content ) ) {
+			return array();
+		}
+		$data = json_decode( $form->post_content, true );
+		if ( ! is_array( $data ) || empty( $data['fields'] ) ) {
+			return array();
+		}
+		$fields = array();
+		foreach ( (array) $data['fields'] as $fid => $field ) {
+			if ( ! is_array( $field ) ) {
+				continue;
+			}
+			$label = isset( $field['label'] ) ? (string) $field['label'] : '';
+			$type  = isset( $field['type'] ) ? (string) $field['type'] : 'text';
+			if ( '' === $label ) {
+				$label = sprintf( 'Field %s', (string) $fid );
+			}
+			$fields[] = array(
+				'id'   => (string) $fid,
+				'name' => $label,
+				'type' => $type,
+			);
+		}
+		return $fields;
+	}
+
+	private function list_formidable_forms() {
+		if ( ! class_exists( '\FrmForm' ) || ! method_exists( '\FrmForm', 'getAll' ) ) {
+			return array();
+		}
+		$forms = \FrmForm::getAll( array( 'is_template' => 0, 'status' => 'published' ), ' ORDER BY name ASC' );
+		if ( ! is_array( $forms ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $forms as $form ) {
+			if ( ! is_object( $form ) ) {
+				continue;
+			}
+			$out[] = array(
+				'id'    => (string) $form->id,
+				'title' => (string) ( $form->name ?? sprintf( 'Form %s', $form->id ) ),
+			);
+		}
+		return $out;
+	}
+
+	private function list_formidable_form_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 || ! class_exists( '\FrmField' ) || ! method_exists( '\FrmField', 'getAll' ) ) {
+			return array();
+		}
+		$raw_fields = \FrmField::getAll( array( 'fi.form_id' => $form_id ), ' ORDER BY fi.field_order ASC' );
+		if ( ! is_array( $raw_fields ) ) {
+			return array();
+		}
+		$skip_types = array( 'divider', 'end_divider', 'break', 'html', 'captcha' );
+		$fields = array();
+		foreach ( $raw_fields as $field ) {
+			if ( ! is_object( $field ) ) {
+				continue;
+			}
+			$type = isset( $field->type ) ? (string) $field->type : 'text';
+			if ( in_array( $type, $skip_types, true ) ) {
+				continue;
+			}
+			$label = isset( $field->name ) ? (string) $field->name : '';
+			if ( '' === $label ) {
+				$label = sprintf( 'Field %s', (string) $field->id );
+			}
+			$fields[] = array(
+				'id'   => (string) $field->id,
+				'name' => $label,
+				'type' => $type,
+			);
+		}
+		return $fields;
 	}
 
 	private function is_suggested_field_type( $type ) {

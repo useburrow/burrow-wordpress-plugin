@@ -98,6 +98,8 @@ class Burrow {
 		$this->loader->add_action( 'ninja_forms_after_submission', $this, 'handle_ninja_submission', 10, 1 );
 		$this->loader->add_action( 'wpcf7_mail_sent', $this, 'handle_cf7_submission', 10, 1 );
 		$this->loader->add_action( 'fluentform_submission_inserted', $this, 'handle_fluent_submission', 10, 3 );
+		$this->loader->add_action( 'wpforms_process_complete', $this, 'handle_wpforms_submission', 10, 4 );
+		$this->loader->add_action( 'frm_after_create_entry', $this, 'handle_formidable_submission', 10, 2 );
 
 		// WooCommerce hooks.
 		$this->loader->add_action( 'woocommerce_checkout_order_processed', $this, 'handle_woocommerce_order', 10, 1 );
@@ -312,6 +314,53 @@ class Burrow {
 			'data'  => is_array( $entry_data ) ? $entry_data : array(),
 		);
 		$this->enqueue_forms_event( $provider->normalize_submission( $payload ) );
+	}
+
+	/**
+	 * Handle WPForms submission.
+	 *
+	 * @param array<string,mixed> $fields    Sanitized entry field values/properties.
+	 * @param array<string,mixed> $entry     Entry data.
+	 * @param array<string,mixed> $form_data Form data and settings.
+	 * @param int                 $entry_id  Entry ID.
+	 * @return void
+	 */
+	public function handle_wpforms_submission( $fields, $entry, $form_data, $entry_id ) {
+		$provider = new BurrowWP\Providers\Forms\WPFormsProvider();
+		$payload  = array(
+			'fields'    => is_array( $fields ) ? $fields : array(),
+			'entry'     => is_array( $entry ) ? $entry : array(),
+			'form_data' => is_array( $form_data ) ? $form_data : array(),
+		);
+		if ( ! empty( $entry_id ) ) {
+			$payload['entry']['id'] = $entry_id;
+		}
+		$this->enqueue_forms_event( $provider->normalize_submission( $payload ) );
+	}
+
+	/**
+	 * Handle Formidable Forms submission.
+	 *
+	 * @param int   $entry_id Entry ID.
+	 * @param int   $form_id  Form ID.
+	 * @return void
+	 */
+	public function handle_formidable_submission( $entry_id, $form_id ) {
+		$provider = new BurrowWP\Providers\Forms\FormidableFormsProvider();
+		$entry    = null;
+		$values   = array();
+
+		if ( class_exists( '\FrmEntry' ) && method_exists( '\FrmEntry', 'getOne' ) ) {
+			$entry = \FrmEntry::getOne( (int) $entry_id, true );
+		}
+		if ( is_object( $entry ) && isset( $entry->metas ) && is_array( $entry->metas ) ) {
+			$values = $entry->metas;
+		}
+
+		$this->enqueue_forms_event( $provider->normalize_submission( array(
+			'entry'  => $entry,
+			'values' => $values,
+		) ) );
 	}
 
 	/**
@@ -1032,6 +1081,10 @@ class Burrow {
 			$result  = $this->get_cf7_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 			$entries = isset( $result['entries'] ) && is_array( $result['entries'] ) ? $result['entries'] : array();
 			$warning = isset( $result['warning'] ) ? (string) $result['warning'] : '';
+		} elseif ( 'wpforms' === $provider ) {
+			$entries = $this->get_wpforms_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
+		} elseif ( 'formidable-forms' === $provider ) {
+			$entries = $this->get_formidable_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} else {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
 		}
@@ -1394,6 +1447,114 @@ class Burrow {
 			'entries' => $out,
 			'warning' => '',
 		);
+	}
+
+	/**
+	 * Load WPForms entries for backfill window.
+	 *
+	 * @param string $form_id     Form ID.
+	 * @param string $window_start ISO timestamp.
+	 * @param string $window_end   ISO timestamp.
+	 * @param int    $offset       Offset cursor.
+	 * @param int    $limit        Limit.
+	 * @return array<int,array<string,mixed>>
+	 */
+	private function get_wpforms_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit ) {
+		if ( ! function_exists( 'wpforms' ) ) {
+			return array();
+		}
+		$entry_handler = wpforms()->get( 'entry' );
+		if ( ! is_object( $entry_handler ) || ! method_exists( $entry_handler, 'get_entries' ) ) {
+			return array();
+		}
+		$start = $this->iso_to_mysql_datetime( $window_start );
+		$end   = $this->iso_to_mysql_datetime( $window_end );
+		$args = array(
+			'form_id' => (int) $form_id,
+			'number'  => max( 1, (int) $limit ),
+			'offset'  => max( 0, (int) $offset ),
+			'orderby' => 'entry_id',
+			'order'   => 'ASC',
+		);
+		if ( '' !== $start ) {
+			$args['date_query'] = array(
+				array(
+					'after'     => $start,
+					'before'    => '' !== $end ? $end : gmdate( 'Y-m-d H:i:s' ),
+					'inclusive' => true,
+				),
+			);
+		}
+		$entries = $entry_handler->get_entries( $args );
+		if ( ! is_array( $entries ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $entries as $entry ) {
+			if ( ! is_object( $entry ) ) {
+				continue;
+			}
+			$fields_raw = isset( $entry->fields ) ? json_decode( $entry->fields, true ) : array();
+			$values = array();
+			if ( is_array( $fields_raw ) ) {
+				foreach ( $fields_raw as $fid => $field ) {
+					$values[ (string) $fid ] = is_array( $field ) ? ( $field['value'] ?? '' ) : (string) $field;
+				}
+			}
+			$out[] = array(
+				'submissionId' => (string) $entry->entry_id,
+				'rawValues'    => $values,
+				'submittedAt'  => $this->resolve_iso8601( $entry->date ?? null ),
+			);
+		}
+		return $out;
+	}
+
+	/**
+	 * Load Formidable Forms entries for backfill window.
+	 *
+	 * @param string $form_id     Form ID.
+	 * @param string $window_start ISO timestamp.
+	 * @param string $window_end   ISO timestamp.
+	 * @param int    $offset       Offset cursor.
+	 * @param int    $limit        Limit.
+	 * @return array<int,array<string,mixed>>
+	 */
+	private function get_formidable_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit ) {
+		if ( ! class_exists( '\FrmEntry' ) || ! method_exists( '\FrmEntry', 'getAll' ) ) {
+			return array();
+		}
+		$start = $this->iso_to_mysql_datetime( $window_start );
+		$end   = $this->iso_to_mysql_datetime( $window_end );
+		$where = array( 'form_id' => (int) $form_id );
+		if ( '' !== $start ) {
+			$where['created_at >'] = '' !== $start ? $start : '1970-01-01 00:00:00';
+		}
+		if ( '' !== $end ) {
+			$where['created_at <'] = $end;
+		}
+		$entries = \FrmEntry::getAll(
+			$where,
+			' ORDER BY id ASC LIMIT ' . max( 1, (int) $limit ) . ' OFFSET ' . max( 0, (int) $offset ),
+			'',
+			true
+		);
+		if ( ! is_array( $entries ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $entries as $entry ) {
+			if ( ! is_object( $entry ) ) {
+				continue;
+			}
+			$values = isset( $entry->metas ) && is_array( $entry->metas ) ? $entry->metas : array();
+			$out[] = array(
+				'submissionId' => (string) $entry->id,
+				'rawValues'    => $values,
+				'submittedAt'  => $this->resolve_iso8601( $entry->created_at ?? null ),
+			);
+		}
+		return $out;
 	}
 
 	/**
