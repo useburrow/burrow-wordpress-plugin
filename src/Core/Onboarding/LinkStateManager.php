@@ -56,6 +56,15 @@ class LinkStateManager {
 			'path' => isset( $project['burrowProjectPath'] ) ? trim( (string) $project['burrowProjectPath'] ) : '',
 			'url'  => isset( $project['burrowProjectUrl'] ) ? trim( (string) $project['burrowProjectUrl'] ) : '',
 		);
+		if ( empty( $settings['routing']['projectId'] ) ) {
+			$project_id = isset( $project['projectId'] ) ? trim( (string) $project['projectId'] ) : '';
+			if ( '' === $project_id && isset( $project['id'] ) ) {
+				$project_id = trim( (string) $project['id'] );
+			}
+			if ( '' !== $project_id ) {
+				$settings['routing']['projectId'] = $project_id;
+			}
+		}
 
 		if ( empty( $settings['routing']['projectId'] ) && ! empty( $settings['ingestion_key']['projectId'] ) ) {
 			$settings['routing']['projectId'] = (string) $settings['ingestion_key']['projectId'];

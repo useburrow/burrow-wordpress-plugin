@@ -416,7 +416,13 @@ class Burrow {
 	 */
 	public function run_outbox_worker() {
 		$settings = $this->options_repo->get_settings();
-		$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+		$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+			$settings['base_url'],
+			$settings['api_key'],
+			5,
+			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
 		$worker   = new BurrowWP\Core\Outbox\OutboxWorker(
 			$this->outbox_repo,
 			$client,
@@ -518,9 +524,11 @@ class Burrow {
 		if ( ! in_array( $status, array( 'queued', 'running' ), true ) ) {
 			return;
 		}
-		if ( empty( $settings['api_key'] ) ) {
+		$configured_api_key = isset( $settings['api_key'] ) ? trim( (string) $settings['api_key'] ) : '';
+		$ingestion_key = isset( $settings['ingestion_key']['key'] ) ? trim( (string) $settings['ingestion_key']['key'] ) : '';
+		if ( '' === $configured_api_key && '' === $ingestion_key ) {
 			$job['status']    = 'failed';
-			$job['lastError'] = 'Missing API key for backfill.';
+			$job['lastError'] = 'Missing Burrow key for backfill.';
 			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
@@ -596,7 +604,13 @@ class Burrow {
 			return;
 		}
 
-		$client  = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+		$client  = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+			$settings['base_url'],
+			$settings['api_key'],
+			5,
+			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
 		$payload = array(
 			'events'            => $events,
 			'cursor'            => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
@@ -621,10 +635,16 @@ class Burrow {
 		$response = $client->backfill_events( $payload );
 		if ( empty( $response['ok'] ) ) {
 			$job['status']    = 'failed';
-			$job['lastError'] = isset( $response['error'] ) ? (string) $response['error'] : 'Backfill request failed.';
+			$job['lastError'] = $this->format_backfill_error( is_array( $response ) ? $response : array() );
 			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
+			$debug_payload = array(
+				'status' => $response['status'] ?? 0,
+				'error'  => $response['error'] ?? '',
+				'body'   => $response['body'] ?? array(),
+			);
+			error_log( '[Burrow backfill failure] ' . wp_json_encode( $debug_payload ) );
 			return;
 		}
 
@@ -641,6 +661,32 @@ class Burrow {
 		$job['updatedAt']       = gmdate( 'c' );
 		$settings['backfill']   = $job;
 		$this->options_repo->save_settings( $settings );
+	}
+
+	/**
+	 * @param array<string,mixed> $response
+	 * @return string
+	 */
+	private function format_backfill_error( array $response ) {
+		$error = isset( $response['error'] ) ? trim( (string) $response['error'] ) : '';
+		$body  = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
+		$code  = '';
+		$message = '';
+		if ( isset( $body['error'] ) && is_array( $body['error'] ) ) {
+			$code    = isset( $body['error']['code'] ) ? trim( (string) $body['error']['code'] ) : '';
+			$message = isset( $body['error']['message'] ) ? trim( (string) $body['error']['message'] ) : '';
+		}
+		if ( '' === $error ) {
+			$status = isset( $response['status'] ) ? (int) $response['status'] : 0;
+			$error  = $status > 0 ? 'HTTP ' . $status : 'Backfill request failed.';
+		}
+		if ( '' !== $code ) {
+			$error .= ' [' . $code . ']';
+		}
+		if ( '' !== $message ) {
+			$error .= ': ' . $message;
+		}
+		return $error;
 	}
 
 	/**

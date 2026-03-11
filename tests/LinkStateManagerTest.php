@@ -45,6 +45,35 @@ class LinkStateManagerTest extends TestCase {
 		$this->assertSame( 'https://app.useburrow.com/clients/cli_1/projects/prj_1', $updated['burrow_project']['url'] );
 	}
 
+	public function test_link_response_persists_project_project_id_when_provided() {
+		$settings = array(
+			'routing' => array(
+				'organizationId' => '',
+				'clientId'       => '',
+				'projectId'      => '',
+				'projectSourceId'=> '',
+				'sourceIds'      => array(),
+			),
+		);
+		$updated = LinkStateManager::apply_link_response(
+			$settings,
+			array(
+				'project' => array(
+					'projectId'         => 'prj_from_project_object',
+					'burrowProjectPath' => '/clients/cli_1/projects/prj_from_project_object',
+					'burrowProjectUrl'  => 'https://app.useburrow.com/clients/cli_1/projects/prj_from_project_object',
+				),
+				'ingestionKey' => array(
+					'key'       => 'ing_key',
+					'projectId' => 'prj_from_ingestion',
+					'keyPrefix' => 'ing',
+				),
+			)
+		);
+
+		$this->assertSame( 'prj_from_project_object', $updated['routing']['projectId'] );
+	}
+
 	public function test_project_deep_link_url_returns_blank_for_missing_or_invalid_url() {
 		$this->assertSame( '', LinkStateManager::project_url_from_settings( array() ) );
 		$this->assertSame(

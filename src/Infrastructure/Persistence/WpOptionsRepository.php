@@ -40,6 +40,14 @@ class WpOptionsRepository {
 					'path' => '',
 					'url'  => '',
 				),
+				'sdk_state'           => array(
+					'ingestionKey'         => '',
+					'projectId'            => '',
+					'formsProjectSourceId' => '',
+					'contractsVersion'     => '',
+					'contractMappings'     => array(),
+					'clientId'             => '',
+				),
 				'routing'             => array(
 					'organizationId' => '',
 					'clientId'       => '',

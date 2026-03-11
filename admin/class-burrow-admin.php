@@ -67,7 +67,13 @@ class Burrow_Admin {
 				$settings['base_url'] = 'https://api.useburrow.com';
 			}
 
-			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+				$settings['base_url'],
+				$settings['api_key'],
+				5,
+				isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+			);
 			$res    = $client->discover( $this->build_discover_payload() );
 			if ( empty( $res['ok'] ) ) {
 				$message = __( 'Connection failed.', 'burrow' ) . ' ' . ( $res['error'] ?? '' );
@@ -88,7 +94,13 @@ class Burrow_Admin {
 				$message = __( 'Please select a project.', 'burrow' );
 			} else {
 				$selected = $candidates[ $index ];
-				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+				$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+					$settings['base_url'],
+					$settings['api_key'],
+					5,
+					isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+					isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+				);
 				$res      = $client->link(
 					array(
 						'site'      => array( 'url' => site_url() ),
@@ -166,7 +178,13 @@ class Burrow_Admin {
 				$step    = 'project';
 				$this->redirect_with_notice( $step, $message );
 			}
-			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+			$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+				$settings['base_url'],
+				$settings['api_key'],
+				5,
+				isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+			);
 			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 			$message = $this->persist_contract_response( $res );
 			$step    = 'backfill';
@@ -276,7 +294,13 @@ class Burrow_Admin {
 					if ( '' !== $routing_error ) {
 						$message = $routing_error;
 					} else {
-					$client = new BurrowWP\Infrastructure\Http\BurrowApiClient( $settings['base_url'], $settings['api_key'], 5, isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array() );
+					$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+						$settings['base_url'],
+						$settings['api_key'],
+						5,
+						isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+						isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+					);
 						$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 						$message = $this->persist_contract_response( $res );
 					}
@@ -1816,6 +1840,9 @@ class Burrow_Admin {
 		$body     = (array) ( $response['body'] ?? array() );
 		$settings = $this->options_repo->get_settings();
 		$settings = BurrowWP\Core\Onboarding\LinkStateManager::apply_link_response( $settings, $body );
+		if ( isset( $body['sdkState'] ) && is_array( $body['sdkState'] ) ) {
+			$settings = $this->apply_sdk_state_to_settings( $settings, $body['sdkState'] );
+		}
 		$this->options_repo->save_settings( $settings );
 		if ( empty( $settings['routing']['projectId'] ) ) {
 			return __( 'Project linked response received, but projectId was missing. Please reselect and link the project.', 'burrow' );
@@ -1853,8 +1880,61 @@ class Burrow_Admin {
 				$s['routing']['sourceIds']['forms'] = $project_source_id;
 			}
 		}
+		if ( isset( $body['sdkState'] ) && is_array( $body['sdkState'] ) ) {
+			$s = $this->apply_sdk_state_to_settings( $s, $body['sdkState'] );
+		}
 		$this->options_repo->save_settings( $s );
 		return __( 'Contracts synced to Burrow.', 'burrow' );
+	}
+
+	/**
+	 * Mirror SDK client state into plugin settings.
+	 *
+	 * @param array<string,mixed> $settings Settings.
+	 * @param array<string,mixed> $sdk_state SDK state.
+	 * @return array<string,mixed>
+	 */
+	private function apply_sdk_state_to_settings( array $settings, array $sdk_state ) {
+		$settings['sdk_state'] = $sdk_state;
+
+		$ingestion_key = isset( $sdk_state['ingestionKey'] ) ? trim( (string) $sdk_state['ingestionKey'] ) : '';
+		if ( '' !== $ingestion_key ) {
+			if ( empty( $settings['ingestion_key'] ) || ! is_array( $settings['ingestion_key'] ) ) {
+				$settings['ingestion_key'] = array();
+			}
+			$settings['ingestion_key']['key'] = $ingestion_key;
+		}
+
+		$project_id = isset( $sdk_state['projectId'] ) ? trim( (string) $sdk_state['projectId'] ) : '';
+		if ( '' !== $project_id ) {
+			$settings['routing']['projectId'] = $project_id;
+			if ( empty( $settings['ingestion_key']['projectId'] ) ) {
+				$settings['ingestion_key']['projectId'] = $project_id;
+			}
+		}
+
+		$client_id = isset( $sdk_state['clientId'] ) ? trim( (string) $sdk_state['clientId'] ) : '';
+		if ( '' !== $client_id && empty( $settings['routing']['clientId'] ) ) {
+			$settings['routing']['clientId'] = $client_id;
+		}
+
+		$forms_source = isset( $sdk_state['formsProjectSourceId'] ) ? trim( (string) $sdk_state['formsProjectSourceId'] ) : '';
+		if ( '' !== $forms_source ) {
+			$settings['routing']['projectSourceId'] = $forms_source;
+			if ( empty( $settings['routing']['sourceIds'] ) || ! is_array( $settings['routing']['sourceIds'] ) ) {
+				$settings['routing']['sourceIds'] = array();
+			}
+			if ( empty( $settings['routing']['sourceIds']['forms'] ) ) {
+				$settings['routing']['sourceIds']['forms'] = $forms_source;
+			}
+		}
+
+		$version = isset( $sdk_state['contractsVersion'] ) ? trim( (string) $sdk_state['contractsVersion'] ) : '';
+		if ( '' !== $version ) {
+			$settings['contract_sync']['version'] = $version;
+		}
+
+		return $settings;
 	}
 
 	private function detect_forms_capabilities() {

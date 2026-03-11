@@ -8,11 +8,11 @@
     "packages": [
         {
             "name": "useburrow/sdk-php",
-            "version": "dev-feature/canonical-envelope-shape",
+            "version": "0.3.0",
             "dist": {
                 "type": "path",
                 "url": "../burrow-sdk/php",
-                "reference": "ac89a207136a7a5a7ea928883b74909b3ae3a672"
+                "reference": "dd4b2fc86a4b30d2684426e98cf957d2508a2e33"
             },
             "require": {
                 "php": "^8.2"
