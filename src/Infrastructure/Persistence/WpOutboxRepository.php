@@ -1,136 +1,208 @@
 <?php
 /**
- * SQL-backed outbox repository.
+ * WordPress-backed outbox store implementing SDK OutboxStoreInterface.
  *
  * @package Burrow
  */
 
 namespace BurrowWP\Infrastructure\Persistence;
 
-class WpOutboxRepository {
-	/**
-	 * DB table.
-	 *
-	 * @var string
-	 */
+use Burrow\Sdk\Outbox\OutboxEnqueueResult;
+use Burrow\Sdk\Outbox\OutboxRecord;
+use Burrow\Sdk\Outbox\OutboxStats;
+use Burrow\Sdk\Outbox\OutboxStatus;
+use Burrow\Sdk\Outbox\OutboxStoreInterface;
+use DateTimeImmutable;
+
+class WpOutboxRepository implements OutboxStoreInterface {
+	/** @var string */
 	private $table_name;
+	/** @var string */
+	private $sent_table;
 
 	public function __construct() {
 		global $wpdb;
 		$this->table_name = $wpdb->prefix . 'burrow_outbox';
+		$this->sent_table = $wpdb->prefix . 'burrow_outbox_sent';
 	}
 
-	/**
-	 * Enqueue event payload with deterministic key.
-	 *
-	 * @param string               $event_key Event key.
-	 * @param string               $channel   Channel.
-	 * @param string               $event     Event name.
-	 * @param array<string, mixed> $payload   Payload.
-	 * @param int                  $max       Max attempts.
-	 * @return int|false
-	 */
-	public function enqueue( $event_key, $channel, $event, array $payload, $max = 6 ) {
+	/** @param array<string,mixed> $payload */
+	public function enqueue( string $eventKey, array $payload ): OutboxEnqueueResult {
 		global $wpdb;
 
-		$now     = current_time( 'mysql', true );
-		$payload = wp_json_encode( $payload );
+		if ( $this->isEventSent( $eventKey ) ) {
+			return new OutboxEnqueueResult( deduped: true, eventKey: $eventKey );
+		}
 
-		$inserted = $wpdb->replace(
+		$now = current_time( 'mysql', true );
+		$json = wp_json_encode( $payload );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$existing = $wpdb->get_var( $wpdb->prepare(
+			"SELECT id FROM {$this->table_name} WHERE event_key = %s LIMIT 1",
+			$eventKey
+		) );
+		if ( null !== $existing ) {
+			return new OutboxEnqueueResult( deduped: true, eventKey: $eventKey );
+		}
+
+		$wpdb->insert(
 			$this->table_name,
 			array(
-				'event_key'       => $event_key,
-				'channel'         => $channel,
-				'event_name'      => $event,
-				'payload_json'    => $payload,
-				'status'          => 'pending',
+				'event_key'       => $eventKey,
+				'payload_json'    => $json,
+				'status'          => OutboxStatus::PENDING,
 				'attempt_count'   => 0,
-				'max_attempts'    => max( 1, (int) $max ),
 				'last_error'      => null,
 				'next_attempt_at' => $now,
+				'created_at'      => $now,
 				'updated_at'      => $now,
 			),
-			array( '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s' )
 		);
 
-		return false === $inserted ? false : (int) $wpdb->insert_id;
+		return new OutboxEnqueueResult( deduped: false, eventKey: $eventKey );
 	}
 
-	/**
-	 * Fetch ready records.
-	 *
-	 * @param int $limit Limit.
-	 * @return array<int,array<string,mixed>>
-	 */
-	public function dequeue_ready( $limit = 100 ) {
+	/** @return list<OutboxRecord> */
+	public function pullPending( int $limit = 50 ): array {
 		global $wpdb;
-
-		$limit = max( 1, (int) $limit );
-		$now   = current_time( 'mysql', true );
-
+		$now = current_time( 'mysql', true );
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$sql = $wpdb->prepare(
 			"SELECT * FROM {$this->table_name}
-			WHERE status IN ('pending','retrying')
+			WHERE status IN (%s, %s)
 			AND next_attempt_at <= %s
 			ORDER BY created_at ASC
 			LIMIT %d",
+			OutboxStatus::PENDING,
+			OutboxStatus::RETRYING,
 			$now,
 			$limit
 		);
-
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		return (array) $wpdb->get_results( $sql, ARRAY_A );
+		$rows = (array) $wpdb->get_results( $sql, ARRAY_A );
+		return array_map( array( $this, 'hydrate_record' ), $rows );
 	}
 
-	/**
-	 * Mark record as sent.
-	 *
-	 * @param int $id Record ID.
-	 * @return bool
-	 */
-	public function mark_sent( $id ) {
-		return $this->update_status( (int) $id, 'sent', null, null );
+	public function markSent( string $id ): void {
+		global $wpdb;
+		$now = current_time( 'mysql', true );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$event_key = $wpdb->get_var( $wpdb->prepare(
+			"SELECT event_key FROM {$this->table_name} WHERE id = %d",
+			(int) $id
+		) );
+
+		$wpdb->update(
+			$this->table_name,
+			array(
+				'status'     => OutboxStatus::SENT,
+				'updated_at' => $now,
+				'sent_at'    => $now,
+			),
+			array( 'id' => (int) $id ),
+			array( '%s', '%s', '%s' ),
+			array( '%d' )
+		);
+
+		if ( null !== $event_key && '' !== $event_key ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$this->sent_table} WHERE event_key = %s",
+				$event_key
+			) );
+			$wpdb->insert(
+				$this->sent_table,
+				array( 'event_key' => $event_key, 'sent_at' => $now ),
+				array( '%s', '%s' )
+			);
+		}
 	}
 
-	/**
-	 * Mark record for retry.
-	 *
-	 * @param int    $id           Record ID.
-	 * @param int    $attempt      Attempt count.
-	 * @param string $next_attempt Next attempt timestamp.
-	 * @param string $last_error   Last error.
-	 * @return bool
-	 */
-	public function mark_retrying( $id, $attempt, $next_attempt, $last_error ) {
-		return $this->update_status( (int) $id, 'retrying', (string) $next_attempt, (string) $last_error, (int) $attempt );
+	public function markRetrying( string $id, string $error, int $delaySeconds = 0 ): void {
+		global $wpdb;
+		$now = current_time( 'mysql', true );
+		$next = $delaySeconds > 0
+			? gmdate( 'Y-m-d H:i:s', time() + $delaySeconds )
+			: $now;
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare(
+			"UPDATE {$this->table_name}
+			SET status = %s, last_error = %s, attempt_count = attempt_count + 1,
+			    next_attempt_at = %s, updated_at = %s
+			WHERE id = %d",
+			OutboxStatus::RETRYING,
+			$error,
+			$next,
+			$now,
+			(int) $id
+		) );
 	}
 
-	/**
-	 * Mark record failed.
-	 *
-	 * @param int    $id         Record ID.
-	 * @param int    $attempt    Attempt count.
-	 * @param string $last_error Last error.
-	 * @return bool
-	 */
-	public function mark_failed( $id, $attempt, $last_error ) {
-		return $this->update_status( (int) $id, 'failed', null, (string) $last_error, (int) $attempt );
+	public function markFailed( string $id, string $error ): void {
+		global $wpdb;
+		$now = current_time( 'mysql', true );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare(
+			"UPDATE {$this->table_name}
+			SET status = %s, last_error = %s, attempt_count = attempt_count + 1,
+			    updated_at = %s
+			WHERE id = %d",
+			OutboxStatus::FAILED,
+			$error,
+			$now,
+			(int) $id
+		) );
 	}
 
-	/**
-	 * Retry a failed record.
-	 *
-	 * @param int $id Record ID.
-	 * @return bool
-	 */
+	public function isEventSent( string $eventKey ): bool {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$found = $wpdb->get_var( $wpdb->prepare(
+			"SELECT 1 FROM {$this->sent_table} WHERE event_key = %s LIMIT 1",
+			$eventKey
+		) );
+		return null !== $found;
+	}
+
+	public function getStats(): OutboxStats {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows = (array) $wpdb->get_results(
+			"SELECT status, COUNT(*) as total FROM {$this->table_name} GROUP BY status",
+			ARRAY_A
+		);
+		$counts = array( 'pending' => 0, 'retrying' => 0, 'sent' => 0, 'failed' => 0 );
+		foreach ( $rows as $row ) {
+			if ( isset( $counts[ $row['status'] ] ) ) {
+				$counts[ $row['status'] ] = (int) $row['total'];
+			}
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$ledger = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->sent_table}" );
+		return new OutboxStats(
+			pending: $counts['pending'],
+			retrying: $counts['retrying'],
+			sent: $counts['sent'],
+			failed: $counts['failed'],
+			sentLedgerCount: $ledger
+		);
+	}
+
+	// ──────────────────────────────────────────────
+	// Plugin-specific helpers (not part of SDK interface)
+	// ──────────────────────────────────────────────
+
 	public function replay_failed( $id ) {
 		global $wpdb;
 		$now = current_time( 'mysql', true );
-		$ok  = $wpdb->update(
+		return false !== $wpdb->update(
 			$this->table_name,
 			array(
-				'status'          => 'pending',
+				'status'          => OutboxStatus::PENDING,
 				'attempt_count'   => 0,
 				'last_error'      => null,
 				'next_attempt_at' => $now,
@@ -140,15 +212,8 @@ class WpOutboxRepository {
 			array( '%s', '%d', '%s', '%s', '%s' ),
 			array( '%d' )
 		);
-		return false !== $ok;
 	}
 
-	/**
-	 * Cleanup sent/failed records.
-	 *
-	 * @param int $days Retention days.
-	 * @return int
-	 */
 	public function cleanup( $days = 14 ) {
 		global $wpdb;
 		$days = max( 1, (int) $days );
@@ -160,81 +225,28 @@ class WpOutboxRepository {
 			$ts
 		);
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		return (int) $wpdb->query( $sql );
+		$deleted = (int) $wpdb->query( $sql );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$this->sent_table} WHERE sent_at < %s",
+			$ts
+		) );
+
+		return $deleted;
 	}
 
-	/**
-	 * Queue counts for admin UI.
-	 *
-	 * @return array<string,int>
-	 */
+	/** @return array<string,int> */
 	public function get_status_counts() {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$sql = "SELECT status, COUNT(*) as total FROM {$this->table_name} GROUP BY status";
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		$rows   = (array) $wpdb->get_results( $sql, ARRAY_A );
-		$counts = array(
-			'pending'  => 0,
-			'retrying' => 0,
-			'sent'     => 0,
-			'failed'   => 0,
+		$stats = $this->getStats();
+		return array(
+			'pending'  => $stats->pending,
+			'retrying' => $stats->retrying,
+			'sent'     => $stats->sent,
+			'failed'   => $stats->failed,
 		);
-		foreach ( $rows as $row ) {
-			$counts[ $row['status'] ] = (int) $row['total'];
-		}
-		return $counts;
 	}
 
-	/**
-	 * Channel + event counts.
-	 *
-	 * @return array<string,int>
-	 */
-	public function get_event_counts() {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$sql = "SELECT event_name, COUNT(*) as total FROM {$this->table_name} WHERE status IN ('pending','retrying') GROUP BY event_name";
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		$rows  = (array) $wpdb->get_results( $sql, ARRAY_A );
-		$items = array();
-		foreach ( $rows as $row ) {
-			$items[ $row['event_name'] ] = (int) $row['total'];
-		}
-		return $items;
-	}
-
-	/**
-	 * Recent failed records for Operations UI.
-	 *
-	 * @param int $limit Max rows.
-	 * @return array<int,array<string,mixed>>
-	 */
-	public function get_failed_records( $limit = 50 ) {
-		global $wpdb;
-		$limit = max( 1, min( 500, (int) $limit ) );
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$sql = $wpdb->prepare(
-			"SELECT id, event_key, channel, event_name, attempt_count, max_attempts, last_error, created_at, updated_at
-			FROM {$this->table_name}
-			WHERE status = 'failed'
-			ORDER BY updated_at DESC
-			LIMIT %d",
-			$limit
-		);
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-		return (array) $wpdb->get_results( $sql, ARRAY_A );
-	}
-
-	/**
-	 * Outbox records with optional filters.
-	 *
-	 * @param string $status Optional status filter.
-	 * @param int    $limit  Max rows.
-	 * @param int    $offset Row offset.
-	 * @param string $search Search query.
-	 * @return array<int,array<string,mixed>>
-	 */
 	public function get_records( $status = '', $limit = 200, $offset = 0, $search = '' ) {
 		global $wpdb;
 		$limit            = max( 1, min( 500, (int) $limit ) );
@@ -274,13 +286,6 @@ class WpOutboxRepository {
 		return (array) $wpdb->get_results( $prepared_sql, ARRAY_A );
 	}
 
-	/**
-	 * Count records for outbox filter.
-	 *
-	 * @param string $status Optional status filter.
-	 * @param string $search Search query.
-	 * @return int
-	 */
 	public function count_records( $status = '', $search = '' ) {
 		global $wpdb;
 		$allowed_statuses = array( 'pending', 'retrying', 'sent', 'failed' );
@@ -311,39 +316,36 @@ class WpOutboxRepository {
 		return (int) $wpdb->get_var( $prepared_sql );
 	}
 
-	/**
-	 * Update record status.
-	 *
-	 * @param int         $id           Record ID.
-	 * @param string      $status       Status.
-	 * @param string|null $next_attempt Next attempt.
-	 * @param string|null $last_error   Last error.
-	 * @param int|null    $attempt      Attempt count.
-	 * @return bool
-	 */
-	private function update_status( $id, $status, $next_attempt = null, $last_error = null, $attempt = null ) {
+	public function get_failed_records( $limit = 50 ) {
 		global $wpdb;
-		$data = array(
-			'status'     => $status,
-			'last_error' => $last_error,
-			'updated_at' => current_time( 'mysql', true ),
+		$limit = max( 1, min( 500, (int) $limit ) );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$sql = $wpdb->prepare(
+			"SELECT id, event_key, channel, event_name, attempt_count, max_attempts, last_error, created_at, updated_at
+			FROM {$this->table_name}
+			WHERE status = 'failed'
+			ORDER BY updated_at DESC
+			LIMIT %d",
+			$limit
 		);
-		$fmt  = array( '%s', '%s', '%s' );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		return (array) $wpdb->get_results( $sql, ARRAY_A );
+	}
 
-		if ( null !== $attempt ) {
-			$data['attempt_count'] = (int) $attempt;
-			$fmt[]                 = '%d';
-		}
-		if ( null !== $next_attempt ) {
-			$data['next_attempt_at'] = $next_attempt;
-			$fmt[]                   = '%s';
-		}
-		if ( 'sent' === $status ) {
-			$data['sent_at'] = current_time( 'mysql', true );
-			$fmt[]           = '%s';
-		}
-
-		$ok = $wpdb->update( $this->table_name, $data, array( 'id' => $id ), $fmt, array( '%d' ) );
-		return false !== $ok;
+	/** @return OutboxRecord */
+	private function hydrate_record( array $row ): OutboxRecord {
+		$payload = json_decode( (string) ( $row['payload_json'] ?? '{}' ), true );
+		return new OutboxRecord(
+			id: (string) $row['id'],
+			eventKey: (string) $row['event_key'],
+			status: (string) $row['status'],
+			attemptCount: (int) $row['attempt_count'],
+			payload: is_array( $payload ) ? $payload : array(),
+			lastError: isset( $row['last_error'] ) ? (string) $row['last_error'] : null,
+			createdAt: new DateTimeImmutable( (string) ( $row['created_at'] ?? 'now' ) ),
+			updatedAt: new DateTimeImmutable( (string) ( $row['updated_at'] ?? 'now' ) ),
+			nextAttemptAt: ! empty( $row['next_attempt_at'] ) ? new DateTimeImmutable( (string) $row['next_attempt_at'] ) : null,
+			sentAt: ! empty( $row['sent_at'] ) ? new DateTimeImmutable( (string) $row['sent_at'] ) : null
+		);
 	}
 }

@@ -275,6 +275,13 @@ class BurrowApiClient {
 	/**
 	 * @return \Burrow\Sdk\Client\BurrowClient
 	 */
+	public function get_dispatch_client() {
+		return $this->dispatch_sdk_client();
+	}
+
+	/**
+	 * @return \Burrow\Sdk\Client\BurrowClient
+	 */
 	private function dispatch_sdk_client() {
 		if ( null !== $this->dispatch_sdk_client_instance ) {
 			return $this->dispatch_sdk_client_instance;

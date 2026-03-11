@@ -593,12 +593,7 @@ class Burrow_Admin {
 		$job    = $this->refresh_backfill_job_state( $settings );
 		$bf_status = isset( $job['status'] ) ? (string) $job['status'] : 'idle';
 
-		$outbox_counts = array(
-			'pending'  => $this->outbox_repo->count_records( 'pending', '' ),
-			'retrying' => $this->outbox_repo->count_records( 'retrying', '' ),
-			'failed'   => $this->outbox_repo->count_records( 'failed', '' ),
-			'sent'     => $this->outbox_repo->count_records( 'sent', '' ),
-		);
+		$outbox_counts = $this->outbox_repo->get_status_counts();
 		?>
 		<div class="wrap">
 			<?php $this->render_admin_notice_from_query(); ?>

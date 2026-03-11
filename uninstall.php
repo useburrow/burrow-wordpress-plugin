@@ -17,8 +17,11 @@ $cleanup  = isset( $settings['cleanup_on_uninstall'] ) ? (bool) $settings['clean
 if ( $cleanup ) {
 	global $wpdb;
 	$table_name = $wpdb->prefix . 'burrow_outbox';
+	$sent_table = $wpdb->prefix . 'burrow_outbox_sent';
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	$wpdb->query( "DROP TABLE IF EXISTS {$table_name}" );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$wpdb->query( "DROP TABLE IF EXISTS {$sent_table}" );
 }
 
 // Remove plugin options from the database.

@@ -29,13 +29,14 @@ class Burrow_Activator {
 		global $wpdb;
 
 		$table_name      = $wpdb->prefix . 'burrow_outbox';
+		$sent_table      = $wpdb->prefix . 'burrow_outbox_sent';
 		$charset_collate = $wpdb->get_charset_collate();
 
 		$sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
 			id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
 			event_key VARCHAR(191) NOT NULL,
-			channel VARCHAR(32) NOT NULL,
-			event_name VARCHAR(128) NOT NULL,
+			channel VARCHAR(32) NOT NULL DEFAULT '',
+			event_name VARCHAR(128) NOT NULL DEFAULT '',
 			payload_json LONGTEXT NOT NULL,
 			status VARCHAR(20) NOT NULL DEFAULT 'pending',
 			attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -52,8 +53,15 @@ class Burrow_Activator {
 			KEY created_at (created_at)
 		) {$charset_collate};";
 
+		$sent_sql = "CREATE TABLE IF NOT EXISTS {$sent_table} (
+			event_key VARCHAR(191) NOT NULL,
+			sent_at DATETIME NOT NULL,
+			PRIMARY KEY (event_key)
+		) {$charset_collate};";
+
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		dbDelta( $sql );
+		dbDelta( $sent_sql );
 	}
 
 	/**

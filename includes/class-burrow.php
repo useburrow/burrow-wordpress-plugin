@@ -32,9 +32,9 @@ class Burrow {
 	private $outbox_repo;
 
 	/**
-	 * @var BurrowWP\Core\Events\EventKeyFactory
+	 * @var \Burrow\Sdk\Outbox\OutboxDelivery|null
 	 */
-	private $event_keys;
+	private $delivery;
 
 	/**
 	 * @var BurrowWP\Core\Events\EnvelopeFactory
@@ -51,7 +51,6 @@ class Burrow {
 		$this->plugin_name     = 'burrow';
 		$this->options_repo    = new BurrowWP\Infrastructure\Persistence\WpOptionsRepository();
 		$this->outbox_repo     = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
-		$this->event_keys      = new BurrowWP\Core\Events\EventKeyFactory();
 		$this->envelopes       = new BurrowWP\Core\Events\EnvelopeFactory();
 		$this->contract_mapper = new BurrowWP\Core\Events\ContractFieldMapper();
 
@@ -161,6 +160,77 @@ class Burrow {
 		if ( ! wp_next_scheduled( 'burrow_outbox_cleanup' ) ) {
 			wp_schedule_event( time() + 1800, 'daily', 'burrow_outbox_cleanup' );
 		}
+	}
+
+	/**
+	 * Lazy-build the SDK OutboxDelivery with structured logging.
+	 *
+	 * @return \Burrow\Sdk\Outbox\OutboxDelivery|null Null if plugin is not configured.
+	 */
+	private function get_delivery() {
+		if ( null !== $this->delivery ) {
+			return $this->delivery;
+		}
+		$settings = $this->options_repo->get_settings();
+		if ( empty( $settings['api_key'] ) || empty( $settings['base_url'] ) ) {
+			return null;
+		}
+		$api_client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
+			$settings['base_url'],
+			$settings['api_key'],
+			5,
+			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$sdk_client = $api_client->get_dispatch_client();
+		$max_attempts = isset( $settings['max_attempts'] ) ? (int) $settings['max_attempts'] : 5;
+
+		$this->delivery = new \Burrow\Sdk\Outbox\OutboxDelivery(
+			$this->outbox_repo,
+			$sdk_client,
+			$max_attempts
+		);
+		return $this->delivery;
+	}
+
+	/**
+	 * Structured logger closure for SDK outbox transitions.
+	 *
+	 * @return \Closure
+	 */
+	private function outbox_logger() {
+		return static function ( array $entry ) {
+			$short = isset( $entry['eventKeyShort'] ) ? (string) $entry['eventKeyShort'] : '???';
+			$from  = isset( $entry['fromStatus'] ) ? (string) $entry['fromStatus'] : '?';
+			$to    = isset( $entry['toStatus'] ) ? (string) $entry['toStatus'] : '?';
+			$http  = isset( $entry['httpStatus'] ) ? (string) $entry['httpStatus'] : '-';
+			$msg   = isset( $entry['message'] ) ? (string) $entry['message'] : '';
+			$retry = ! empty( $entry['retryable'] ) ? 'retryable' : 'terminal';
+			error_log( sprintf(
+				'[Burrow outbox] %s %s->%s http=%s %s %s',
+				$short,
+				$from,
+				$to,
+				$http,
+				$retry,
+				$msg
+			) );
+		};
+	}
+
+	/**
+	 * Enqueue events through the SDK outbox delivery.
+	 *
+	 * @param list<array<string,mixed>> $events   Envelopes.
+	 * @param array<string,mixed>       $context  Key generation context.
+	 * @return array{enqueued:int,deduped:int}
+	 */
+	private function sdk_enqueue_events( array $events, array $context = array() ) {
+		$delivery = $this->get_delivery();
+		if ( null === $delivery ) {
+			return array( 'enqueued' => 0, 'deduped' => 0 );
+		}
+		return $delivery->enqueueEvents( $events, $context );
 	}
 
 	/**
@@ -281,18 +351,11 @@ class Burrow {
 			return;
 		}
 
-		$this->outbox_repo->enqueue(
-			$this->event_keys->ecommerce_order_key( (string) $data['orderId'] ),
-			'ecommerce',
-			'order.placed',
-			$order_envelope,
-			(int) $settings['max_attempts']
-		);
+		$envelopes = array( $order_envelope );
 
 		foreach ( (array) $data['items'] as $item ) {
-			$item_event_key = $this->event_keys->ecommerce_item_key( (string) $data['orderId'], (string) $item['lineItemId'] );
 			try {
-				$item_envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
+				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
 					array(
 						'organizationId' => $org_id,
 						'orderId'        => (string) $data['orderId'],
@@ -320,15 +383,12 @@ class Burrow {
 				error_log( '[Burrow ecommerce] item.purchased build failed: ' . $e->getMessage() );
 				continue;
 			}
-
-			$this->outbox_repo->enqueue(
-				$item_event_key,
-				'ecommerce',
-				'item.purchased',
-				$item_envelope,
-				(int) $settings['max_attempts']
-			);
 		}
+
+		$this->sdk_enqueue_events( $envelopes, array(
+			'provider'  => 'woocommerce',
+			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+		) );
 	}
 
 	/**
@@ -388,7 +448,8 @@ class Burrow {
 				'icon'            => $this->resolve_event_icon_override( $settings, 'forms.submission.received', $contract ),
 				'entityType'      => 'form_submission',
 				'externalEntityId'=> (string) $payload['submissionId'],
-				'externalEventId' => $this->event_keys->forms_submission_key( (string) $payload['formId'], (string) $payload['submissionId'] ),
+				'externalEventId' => sprintf( 'forms:%s:%s', (string) $payload['formId'], (string) $payload['submissionId'] ),
+				'submissionId'    => (string) $payload['submissionId'],
 				'channel'         => 'forms',
 				'event'           => 'forms.submission.received',
 				'source'          => $this->event_source_for_provider( (string) $payload['provider'] ),
@@ -399,13 +460,13 @@ class Burrow {
 			)
 		);
 
-		$this->outbox_repo->enqueue(
-			$this->event_keys->forms_submission_key( (string) $payload['formId'], (string) $payload['submissionId'] ),
-			'forms',
-			'forms.submission.received',
-			$envelope,
-			(int) $settings['max_attempts']
-		);
+		$this->sdk_enqueue_events( array( $envelope ), array(
+			'provider'  => (string) $payload['provider'],
+			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+			'entityIds' => array(
+				'submissionId' => (string) $payload['submissionId'],
+			),
+		) );
 	}
 
 	/**
@@ -414,20 +475,11 @@ class Burrow {
 	 * @return void
 	 */
 	public function run_outbox_worker() {
-		$settings = $this->options_repo->get_settings();
-		$client   = new BurrowWP\Infrastructure\Http\BurrowApiClient(
-			$settings['base_url'],
-			$settings['api_key'],
-			5,
-			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
-			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
-		);
-		$worker   = new BurrowWP\Core\Outbox\OutboxWorker(
-			$this->outbox_repo,
-			$client,
-			new BurrowWP\Core\Outbox\RetryPolicy()
-		);
-		$worker->run_once( 100 );
+		$delivery = $this->get_delivery();
+		if ( null === $delivery ) {
+			return;
+		}
+		$delivery->flushOutbox( 100 );
 	}
 
 	/**
@@ -451,13 +503,10 @@ class Burrow {
 			error_log( '[Burrow system] Heartbeat skipped: ' . $e->getMessage() );
 			return;
 		}
-		$this->outbox_repo->enqueue(
-			'system:heartbeat:' . gmdate( 'YmdH' ),
-			'system',
-			'heartbeat.ping',
-			$envelope,
-			(int) $settings['max_attempts']
-		);
+		$this->sdk_enqueue_events( array( $envelope ), array(
+			'provider'  => 'snapshot',
+			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+		) );
 	}
 
 	/**
@@ -493,13 +542,10 @@ class Burrow {
 			error_log( '[Burrow system] Stack snapshot skipped: ' . $e->getMessage() );
 			return;
 		}
-		$this->outbox_repo->enqueue(
-			'system:stack:' . gmdate( 'Ymd' ),
-			'system',
-			'stack.snapshot',
-			$envelope,
-			(int) $settings['max_attempts']
-		);
+		$this->sdk_enqueue_events( array( $envelope ), array(
+			'provider'  => 'snapshot',
+			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+		) );
 	}
 
 	/**
@@ -616,80 +662,46 @@ class Burrow {
 			return;
 		}
 
-		$events_by_channel = $this->group_events_by_channel( $events );
+		$delivery = $this->get_delivery();
+		if ( null === $delivery ) {
+			$job['status']    = 'failed';
+			$job['lastError'] = 'Plugin not configured for delivery.';
+			$job['updatedAt'] = gmdate( 'c' );
+			$settings['backfill'] = $job;
+			$this->options_repo->save_settings( $settings );
+			return;
+		}
 
-		$client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
-			$settings['base_url'],
-			$settings['api_key'],
-			5,
-			isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array(),
-			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		$context = array(
+			'projectId' => (string) ( $settings['routing']['projectId'] ?? '' ),
+			'provider'  => 'wordpress-plugin',
 		);
 
-		$total_accepted = 0;
-		$last_error     = '';
+		$batch_result = $delivery->runBackfillBatch( $events, $context, $batch_size );
 
-		foreach ( $events_by_channel as $channel => $channel_events ) {
-			$channel_source_id = $this->resolve_backfill_source_for_channel( $channel, $settings );
+		$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + $batch_result['sent'];
+		$job['backfillMetrics'] = array(
+			'enqueued' => $batch_result['enqueued'],
+			'deduped'  => $batch_result['deduped'],
+			'sent'     => $batch_result['sent'],
+			'retried'  => $batch_result['retried'],
+			'failed'   => $batch_result['failed'],
+		);
 
-			$payload = array(
-				'events'            => $channel_events,
-				'channel'           => $channel,
-				'cursor'            => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
-				'windowStart'       => $window_start,
-				'windowEnd'         => $window_end,
-				'source'            => 'wordpress-plugin',
-				'metadata'          => array(
-					'cursor'      => isset( $cursor[ $current_contract_key ] ) ? $cursor[ $current_contract_key ] : array(),
-					'windowStart' => $window_start,
-					'windowEnd'   => $window_end,
-					'source'      => 'wordpress-plugin',
-				),
-				'batchSize'         => $batch_size,
-				'perKeyConcurrency' => max( 1, (int) ( $job['perKeyConcurrency'] ?? 4 ) ),
-				'routing'           => array(
-					'clientId'        => $settings['routing']['clientId'] ?? null,
-					'projectId'       => $settings['routing']['projectId'] ?? null,
-					'projectSourceId' => $channel_source_id,
-					'integrationId'   => $settings['routing']['integrationId'] ?? null,
-				),
+		if ( ! $batch_result['checkpointAdvanceSafe'] ) {
+			$job['lastError'] = sprintf(
+				'Batch has %d retrying records; checkpoint held. Will retry on next tick.',
+				$batch_result['retried']
 			);
-
-			$response = $client->backfill_events( $payload );
-			if ( empty( $response['ok'] ) ) {
-				$job['status']    = 'failed';
-				$job['lastError'] = $this->format_backfill_error( is_array( $response ) ? $response : array() );
-				$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + $total_accepted;
-				$job['updatedAt'] = gmdate( 'c' );
-				$settings['backfill'] = $job;
-				$this->options_repo->save_settings( $settings );
-				$debug_payload = array(
-					'channel' => $channel,
-					'status'  => $response['status'] ?? 0,
-					'error'   => $response['error'] ?? '',
-					'body'    => $response['body'] ?? array(),
-				);
-				error_log( '[Burrow backfill failure] ' . wp_json_encode( $debug_payload ) );
-				return;
-			}
-
-			$response_body  = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
-			$accepted_count = isset( $response_body['acceptedCount'] ) ? (int) $response_body['acceptedCount'] : count( $channel_events );
-			$rejected_rows  = isset( $response_body['rejected'] ) && is_array( $response_body['rejected'] ) ? $response_body['rejected'] : array();
-			$rejected_count = isset( $response_body['rejectedCount'] ) ? (int) $response_body['rejectedCount'] : count( $rejected_rows );
-			$total_accepted += max( 0, $accepted_count );
-
-			if ( $rejected_count > 0 ) {
-				$first_rejected = reset( $rejected_rows );
-				$reason = is_array( $first_rejected ) && ! empty( $first_rejected['reason'] ) ? (string) $first_rejected['reason'] : 'One or more events were rejected.';
-				$last_error = sprintf( 'Backfill accepted %d and rejected %d %s events. First rejection: %s', $accepted_count, $rejected_count, $channel, $reason );
-			}
 		}
 
-		$job['processedEvents'] = (int) ( $job['processedEvents'] ?? 0 ) + $total_accepted;
-		if ( '' !== $last_error ) {
-			$job['lastError'] = $last_error;
+		if ( $batch_result['failed'] > 0 ) {
+			$job['lastError'] = sprintf(
+				'%d events failed (non-retryable) in this batch.',
+				$batch_result['failed']
+			);
 		}
+
 		$job['updatedAt']     = gmdate( 'c' );
 		$settings['backfill'] = $job;
 		$this->options_repo->save_settings( $settings );
@@ -888,7 +900,8 @@ class Burrow {
 					'icon'            => $this->resolve_event_icon_override( $settings, 'forms.submission.received', $contract ),
 					'entityType'      => 'form_submission',
 					'externalEntityId'=> $submission_id,
-					'externalEventId' => $this->event_keys->forms_submission_key( (string) $form_id, $submission_id ),
+					'externalEventId' => sprintf( 'forms:%s:%s', (string) $form_id, $submission_id ),
+					'submissionId'    => $submission_id,
 					'channel'         => 'forms',
 					'event'           => 'forms.submission.received',
 					'source'          => $this->event_source_for_provider( $provider ),
