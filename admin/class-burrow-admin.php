@@ -644,6 +644,9 @@ class Burrow_Admin {
 						?>
 						&mdash; <a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-outbox' ) ); ?>"><?php esc_html_e( 'View', 'burrow' ); ?></a>
 					</p>
+					<?php if ( ( $outbox_counts['pending'] + $outbox_counts['retrying'] ) > 0 ) : ?>
+						<?php $this->render_cron_dispatch_notice( 'outbox' ); ?>
+					<?php endif; ?>
 				</div>
 				<div class="burrow-card">
 					<h3><?php esc_html_e( 'Backfill', 'burrow' ); ?></h3>
@@ -1025,6 +1028,7 @@ class Burrow_Admin {
 			<?php $this->render_burrow_page_header( __( 'Burrow Outbox', 'burrow' ) ); ?>
 			<?php $this->render_status_badge_styles(); ?>
 			<p class="description"><?php esc_html_e( 'Outbox records for delivery debugging with status filters, search, and pagination.', 'burrow' ); ?></p>
+			<?php $this->render_cron_dispatch_notice( 'outbox' ); ?>
 			<h2 class="nav-tab-wrapper" style="margin-bottom:12px;">
 				<?php foreach ( $tabs as $tab_key => $tab_label ) : ?>
 					<?php $tab_url = add_query_arg( array( 'page' => 'burrow-outbox', 'status' => $tab_key, 'q' => $search ), $base_url ); ?>
@@ -1698,6 +1702,7 @@ class Burrow_Admin {
 				<?php endforeach; ?>
 			</ul>
 		<?php endif; ?>
+		<?php $this->render_cron_dispatch_notice( 'backfill' ); ?>
 		<form method="post">
 			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
 			<input type="hidden" name="burrow_action" value="queue_backfill" />
@@ -1907,6 +1912,62 @@ class Burrow_Admin {
 			<h1 style="margin:0;"><?php echo esc_html( (string) $title ); ?></h1>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Render an inline notice about WP-Cron dispatch if relevant.
+	 *
+	 * @param string $context 'outbox' or 'backfill' for tailored messaging.
+	 */
+	private function render_cron_dispatch_notice( $context = 'outbox' ) {
+		$cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
+		$alt_cron      = defined( 'ALTERNATE_WP_CRON' ) && ALTERNATE_WP_CRON;
+		$next_outbox   = wp_next_scheduled( 'burrow_outbox_worker' );
+
+		if ( $cron_disabled && false === $next_outbox ) {
+			?>
+			<div class="notice notice-warning inline" style="margin:8px 0 12px;">
+				<p>
+					<strong><?php esc_html_e( 'WP-Cron is disabled on this site.', 'burrow' ); ?></strong>
+					<?php esc_html_e( 'Burrow relies on WP-Cron to dispatch queued events. Ensure a system cron (e.g. crontab) hits', 'burrow' ); ?>
+					<code><?php echo esc_html( site_url( '/wp-cron.php' ) ); ?></code>
+					<?php esc_html_e( 'every 1–2 minutes, or events will remain pending until the next page load triggers cron.', 'burrow' ); ?>
+				</p>
+			</div>
+			<?php
+			return;
+		}
+
+		if ( 'backfill' === $context ) {
+			?>
+			<p class="description" style="margin:4px 0 8px;">
+				<span class="dashicons dashicons-clock" style="font-size:14px;width:14px;height:14px;vertical-align:middle;margin-right:2px;"></span>
+				<?php esc_html_e( 'Events are dispatched via WP-Cron every ~2 minutes. On low-traffic sites, visit any page to trigger cron, or configure a system cron for reliable scheduling.', 'burrow' ); ?>
+			</p>
+			<?php
+		} else {
+			?>
+			<p class="description" style="margin:4px 0 8px;">
+				<span class="dashicons dashicons-clock" style="font-size:14px;width:14px;height:14px;vertical-align:middle;margin-right:2px;"></span>
+				<?php
+				esc_html_e( 'Outbox events are flushed via WP-Cron every ~2 minutes.', 'burrow' );
+				if ( false !== $next_outbox ) {
+					$diff = (int) $next_outbox - time();
+					if ( $diff > 0 ) {
+						echo ' ';
+						printf(
+							esc_html__( 'Next scheduled run in %s.', 'burrow' ),
+							esc_html( human_time_diff( time(), (int) $next_outbox ) )
+						);
+					} else {
+						echo ' ';
+						esc_html_e( 'Next run is due now and will fire on the next page load.', 'burrow' );
+					}
+				}
+				?>
+			</p>
+			<?php
+		}
 	}
 
 	private function get_brand_logo_src() {
