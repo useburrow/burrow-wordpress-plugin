@@ -112,6 +112,7 @@ class Burrow {
 		$this->loader->add_action( 'burrow_system_stack_snapshot', $this, 'emit_system_stack_snapshot' );
 		$this->loader->add_action( 'burrow_outbox_cleanup', $this, 'cleanup_outbox' );
 		$this->loader->add_action( 'burrow_backfill_worker', $this, 'run_backfill_worker' );
+		$this->loader->add_action( 'burrow_invalidate_delivery', $this, 'invalidate_delivery_cache' );
 	}
 
 	/**
@@ -192,6 +193,15 @@ class Burrow {
 			$max_attempts
 		);
 		return $this->delivery;
+	}
+
+	/**
+	 * Force the delivery instance to rebuild on next use.
+	 * Call after settings mutations (contract sync, link) that change
+	 * credentials or routing so the next enqueue/flush uses fresh state.
+	 */
+	public function invalidate_delivery_cache() {
+		$this->delivery = null;
 	}
 
 	/**

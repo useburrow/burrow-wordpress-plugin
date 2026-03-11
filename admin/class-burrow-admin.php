@@ -222,7 +222,10 @@ class Burrow_Admin {
 			$res    = $client->submit_forms_contract( $this->build_forms_contract_payload( $settings ) );
 			$message = $this->persist_contract_response( $res );
 			if ( ! empty( $res['ok'] ) ) {
+				do_action( 'burrow_invalidate_delivery' );
 				do_action( 'burrow_system_stack_snapshot' );
+				do_action( 'burrow_system_heartbeat' );
+				do_action( 'burrow_outbox_worker' );
 			}
 			$step    = 'backfill';
 		} elseif ( 'queue_backfill' === $action ) {
@@ -266,7 +269,7 @@ class Burrow_Admin {
 						'perKeyConcurrency'  => 4,
 					);
 					$this->options_repo->save_settings( $settings );
-					// Emit a fresh stack snapshot at backfill start for baseline visibility.
+					do_action( 'burrow_invalidate_delivery' );
 					do_action( 'burrow_system_stack_snapshot' );
 					// Kick off worker immediately for local/dev visibility,
 					// while cron remains the durable fallback path.
