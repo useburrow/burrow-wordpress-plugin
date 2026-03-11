@@ -68,4 +68,19 @@ class LinkStateManagerTest extends TestCase {
 			)
 		);
 	}
+
+	public function test_project_deep_link_url_is_built_from_base_url_and_project_path() {
+		$this->assertSame(
+			'https://app.useburrow.com/clients/cli_1/projects/prj_1',
+			LinkStateManager::project_url_from_settings(
+				array(
+					'base_url'       => 'https://api.useburrow.com',
+					'burrow_project' => array(
+						'path' => '/clients/cli_1/projects/prj_1',
+						'url'  => 'https://app.useburrow.com/clients/cli_old/projects/prj_old',
+					),
+				)
+			)
+		);
+	}
 }

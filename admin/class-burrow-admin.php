@@ -1837,7 +1837,22 @@ class Burrow_Admin {
 		}
 		$body = (array) ( $response['body'] ?? array() );
 		$s    = $this->options_repo->get_settings();
-		$s['contract_sync'] = array( 'version' => (string) ( $body['version'] ?? '' ), 'hash' => (string) ( $body['hash'] ?? '' ), 'syncedAt' => gmdate( 'c' ) );
+		$version = isset( $body['contractsVersion'] ) ? (string) $body['contractsVersion'] : (string) ( $body['version'] ?? '' );
+		$s['contract_sync'] = array(
+			'version'  => $version,
+			'hash'     => (string) ( $body['hash'] ?? '' ),
+			'syncedAt' => gmdate( 'c' ),
+		);
+		$project_source_id = isset( $body['projectSourceId'] ) ? trim( (string) $body['projectSourceId'] ) : '';
+		if ( '' !== $project_source_id ) {
+			$s['routing']['projectSourceId'] = $project_source_id;
+			if ( empty( $s['routing']['sourceIds'] ) || ! is_array( $s['routing']['sourceIds'] ) ) {
+				$s['routing']['sourceIds'] = array();
+			}
+			if ( empty( $s['routing']['sourceIds']['forms'] ) ) {
+				$s['routing']['sourceIds']['forms'] = $project_source_id;
+			}
+		}
 		$this->options_repo->save_settings( $s );
 		return __( 'Contracts synced to Burrow.', 'burrow' );
 	}
