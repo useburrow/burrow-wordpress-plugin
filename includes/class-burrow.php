@@ -230,7 +230,7 @@ class Burrow {
 	}
 
 	/**
-	 * Enqueue events through the SDK outbox delivery.
+	 * Enqueue events through the SDK outbox delivery (background dispatch via cron).
 	 *
 	 * @param list<array<string,mixed>> $events   Envelopes.
 	 * @param array<string,mixed>       $context  Key generation context.
@@ -242,6 +242,23 @@ class Burrow {
 			return array( 'enqueued' => 0, 'deduped' => 0 );
 		}
 		return $delivery->enqueueEvents( $events, $context );
+	}
+
+	/**
+	 * Dispatch events immediately, falling back to the outbox on failure.
+	 * Use for realtime hooks (form submissions, ecommerce orders) where
+	 * instant delivery is preferred over waiting for cron.
+	 *
+	 * @param list<array<string,mixed>> $events   Envelopes.
+	 * @param array<string,mixed>       $context  Key generation context.
+	 * @return array{enqueued:int,deduped:int,sent:int,retrying:int,failed:int}
+	 */
+	private function sdk_dispatch_events( array $events, array $context = array() ) {
+		$delivery = $this->get_delivery();
+		if ( null === $delivery ) {
+			return array( 'enqueued' => 0, 'deduped' => 0, 'sent' => 0, 'retrying' => 0, 'failed' => 0 );
+		}
+		return $delivery->dispatchImmediate( $events, $context );
 	}
 
 	/**
@@ -362,7 +379,7 @@ class Burrow {
 		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
 			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
 		);
-		$this->sdk_enqueue_events( $envelopes, array(
+		$this->sdk_dispatch_events( $envelopes, array(
 			'provider'  => 'woocommerce',
 			'projectId' => $sdk->projectId ?? '',
 		) );
@@ -436,7 +453,7 @@ class Burrow {
 		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
 			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
 		);
-		$this->sdk_enqueue_events( array( $envelope ), array(
+		$this->sdk_dispatch_events( array( $envelope ), array(
 			'provider'  => 'woocommerce',
 			'projectId' => $sdk->projectId ?? '',
 		) );
@@ -606,7 +623,7 @@ class Burrow {
 			)
 		);
 
-		$this->sdk_enqueue_events( array( $envelope ), array(
+		$this->sdk_dispatch_events( array( $envelope ), array(
 			'provider'  => (string) $payload['provider'],
 			'projectId' => $sdk->projectId ?? '',
 			'entityIds' => array(
