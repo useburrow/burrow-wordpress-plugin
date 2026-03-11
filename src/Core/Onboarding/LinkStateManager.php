@@ -38,10 +38,13 @@ class LinkStateManager {
 			$settings['routing']['projectSourceId'] = $sdk->formsProjectSourceId;
 		}
 		if ( null !== $sdk->ingestionKey ) {
+			$body_ik    = isset( $body['ingestionKey'] ) && is_array( $body['ingestionKey'] ) ? $body['ingestionKey'] : array();
+			$key_prefix = isset( $body_ik['keyPrefix'] ) ? trim( (string) $body_ik['keyPrefix'] ) : '';
+
 			$settings['ingestion_key'] = array(
 				'key'       => $sdk->ingestionKey,
 				'projectId' => $sdk->projectId ?? '',
-				'keyPrefix' => '',
+				'keyPrefix' => $key_prefix,
 			);
 		}
 

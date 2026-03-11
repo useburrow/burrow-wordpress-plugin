@@ -40,6 +40,7 @@ class LinkStateManagerTest extends TestCase {
 		$this->assertSame( 'org_1', $updated['routing']['organizationId'] );
 		$this->assertSame( 'prj_1', $updated['routing']['projectId'] );
 		$this->assertSame( 'ing_prj_key', $updated['ingestion_key']['key'] );
+		$this->assertSame( 'ing_prj', $updated['ingestion_key']['keyPrefix'] );
 		$this->assertSame( '/clients/cli_1/projects/prj_1', $updated['burrow_project']['path'] );
 		$this->assertSame( 'https://app.useburrow.com/clients/cli_1/projects/prj_1', $updated['burrow_project']['url'] );
 		$this->assertSame( 'src_forms_1', $updated['routing']['sourceIds']['forms'] );
