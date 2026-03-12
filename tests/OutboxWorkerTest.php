@@ -60,7 +60,7 @@ class OutboxDeliveryIntegrationTest extends TestCase {
 		} );
 
 		$delivery = new OutboxDelivery( $store, $client, 5, $backoff );
-		$event    = $this->make_event( 'system', 'heartbeat.ping', array( 'externalEventId' => 'hb_1' ) );
+		$event    = $this->make_event( 'system', 'system.heartbeat.ping', array( 'externalEventId' => 'hb_1' ) );
 		$delivery->enqueueEvents( array( $event ), array( 'projectId' => 'prj_1' ) );
 
 		$first_flush = $delivery->flushOutbox( 50 );
@@ -121,7 +121,7 @@ class OutboxDeliveryIntegrationTest extends TestCase {
 		$client->method( 'publishEvent' )->willReturn( new HttpResponse( 200, array(), '' ) );
 		$delivery = new OutboxDelivery( $store, $client );
 
-		$event = $this->make_event( 'ecommerce', 'order.placed', array( 'externalEventId' => 'ord_1' ) );
+		$event = $this->make_event( 'ecommerce', 'ecommerce.order.placed', array( 'externalEventId' => 'ord_1' ) );
 		$delivery->enqueueEvents( array( $event ), array( 'projectId' => 'prj_1', 'provider' => 'woocommerce' ) );
 
 		$stats_before = $delivery->getOutboxStats();

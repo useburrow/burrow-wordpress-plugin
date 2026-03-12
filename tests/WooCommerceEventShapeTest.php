@@ -52,7 +52,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			$this->routing()
 		);
 		$this->assertSame( 'ecommerce', $envelope['channel'] );
-		$this->assertSame( 'order.placed', $envelope['event'] );
+		$this->assertSame( 'ecommerce.order.placed', $envelope['event'] );
 		$this->assertTrue( $envelope['isLifecycle'] );
 		$this->assertSame( 'order', $envelope['entityType'] );
 		$this->assertSame( 'wc_order_42', $envelope['externalEntityId'] );
@@ -111,7 +111,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			),
 			$this->routing()
 		);
-		$this->assertSame( 'item.purchased', $envelope['event'] );
+		$this->assertSame( 'ecommerce.item.purchased', $envelope['event'] );
 		$this->assertSame( 'wc_cust_7', $envelope['tags']['customerToken'] );
 		$this->assertSame( 'woocommerce', $envelope['tags']['provider'] );
 	}
@@ -129,7 +129,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			),
 			$this->routing()
 		);
-		$this->assertSame( 'order.fulfilled', $envelope['event'] );
+		$this->assertSame( 'ecommerce.order.fulfilled', $envelope['event'] );
 		$this->assertTrue( $envelope['isLifecycle'] );
 		$this->assertSame( 'order', $envelope['entityType'] );
 		$this->assertSame( 'wc_order_42', $envelope['externalEntityId'] );
@@ -150,7 +150,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			),
 			$this->routing()
 		);
-		$this->assertSame( 'order.refunded', $envelope['event'] );
+		$this->assertSame( 'ecommerce.order.refunded', $envelope['event'] );
 		$this->assertTrue( $envelope['isLifecycle'] );
 		$this->assertSame( 'refunded', $envelope['state'] );
 		$this->assertSame( 'wc_cust_7', $envelope['tags']['customerToken'] );
@@ -169,7 +169,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			),
 			$this->routing()
 		);
-		$this->assertSame( 'order.cancelled', $envelope['event'] );
+		$this->assertSame( 'ecommerce.order.cancelled', $envelope['event'] );
 		$this->assertTrue( $envelope['isLifecycle'] );
 		$this->assertSame( 'cancelled', $envelope['state'] );
 		$this->assertSame( 'wc_order_42', $envelope['externalEntityId'] );

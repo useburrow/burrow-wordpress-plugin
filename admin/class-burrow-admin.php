@@ -1031,7 +1031,7 @@ class Burrow_Admin {
 
 			<?php if ( in_array( 'woocommerce', $selected, true ) && 'track' === $woo_mode ) : ?>
 				<h2 style="margin-top:24px;"><?php esc_html_e( 'WooCommerce', 'burrow' ); ?></h2>
-				<p><?php esc_html_e( 'Tracking order.placed and item.purchased events for all WooCommerce orders.', 'burrow' ); ?></p>
+				<p><?php esc_html_e( 'Tracking ecommerce.order.placed and ecommerce.item.purchased events for all WooCommerce orders.', 'burrow' ); ?></p>
 			<?php endif; ?>
 
 			<h2 style="margin-top:24px;"><?php esc_html_e( 'Data Backfill', 'burrow' ); ?></h2>

@@ -29,7 +29,7 @@ class EventKeyGeneratorTest extends TestCase {
 	public function test_ecommerce_order_key_stable() {
 		$event = array(
 			'channel'         => 'ecommerce',
-			'event'           => 'order.placed',
+			'event'           => 'ecommerce.order.placed',
 			'timestamp'       => '2026-03-01T12:00:00Z',
 			'source'          => 'woocommerce',
 			'projectId'       => 'prj_1',
@@ -45,7 +45,7 @@ class EventKeyGeneratorTest extends TestCase {
 	public function test_ecommerce_item_key_includes_line_item() {
 		$event = array(
 			'channel'    => 'ecommerce',
-			'event'      => 'item.purchased',
+			'event'      => 'ecommerce.item.purchased',
 			'timestamp'  => '2026-03-01T12:00:00Z',
 			'source'     => 'woocommerce',
 			'projectId'  => 'prj_1',
