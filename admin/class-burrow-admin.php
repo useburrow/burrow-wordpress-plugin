@@ -168,6 +168,13 @@ class Burrow_Admin {
 							'clientId'       => (string) $selected['clientId'],
 							'projectId'      => (string) $selected['projectId'],
 						),
+						'platform'  => 'wordpress',
+						'capabilities' => array(
+							'forms'            => array_values( $this->detect_forms_capabilities() ),
+							'ecommerce'        => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(),
+							'ecommerce_funnel' => class_exists( 'WooCommerce' ),
+							'system'           => true,
+						),
 					)
 				);
 				$message = $this->persist_link_response( $res );
@@ -193,12 +200,19 @@ class Burrow_Admin {
 			$step    = $this->next_config_step( $settings, 'integrations' );
 		} elseif ( 'save_gravity_contracts' === $action ) {
 			$gravity                        = isset( $_POST['gravity'] ) ? wp_unslash( $_POST['gravity'] ) : array();
-			$settings['forms_contracts']    = $this->merge_gravity_contracts( $settings, $gravity );
-			$settings['onboarding']['gravity_configured'] = true;
-			$settings['onboarding']['provider_configured']['gravity-forms'] = true;
-			$this->options_repo->save_settings( $settings );
-			$message = __( 'Gravity Forms configuration saved.', 'burrow' );
-			$step    = $this->next_config_step( $settings, 'gravity-forms' );
+			$error_message                  = '';
+			$merged_contracts               = $this->merge_gravity_contracts( $settings, $gravity, $error_message );
+			if ( '' !== $error_message ) {
+				$message = $error_message;
+				$step    = 'gravity-forms';
+			} else {
+				$settings['forms_contracts']    = $merged_contracts;
+				$settings['onboarding']['gravity_configured'] = true;
+				$settings['onboarding']['provider_configured']['gravity-forms'] = true;
+				$this->options_repo->save_settings( $settings );
+				$message = __( 'Gravity Forms configuration saved.', 'burrow' );
+				$step    = $this->next_config_step( $settings, 'gravity-forms' );
+			}
 		} elseif ( 'save_provider_contracts' === $action ) {
 			$provider = isset( $_POST['provider'] ) ? sanitize_key( wp_unslash( $_POST['provider'] ) ) : '';
 			$allowed  = array( 'contact-form-7', 'ninja-forms', 'fluent-forms' );
@@ -207,12 +221,18 @@ class Burrow_Admin {
 				$message = __( 'Invalid provider selected.', 'burrow' );
 			} else {
 				$provider_forms = isset( $_POST['provider_forms'] ) ? wp_unslash( $_POST['provider_forms'] ) : array();
-				$settings['forms_contracts'] = $this->merge_simple_provider_contracts( $settings, $provider, $provider_forms );
-				$settings['onboarding']['provider_configured'][ $provider ] = true;
-				$this->options_repo->save_settings( $settings );
-				$labels  = $this->integration_labels();
-				$message = sprintf( __( '%s configuration saved.', 'burrow' ), (string) ( $labels[ $provider ] ?? $provider ) );
-				$step    = $this->next_config_step( $settings, $provider );
+				$error_message = '';
+				$merged_contracts = $this->merge_simple_provider_contracts( $settings, $provider, $provider_forms, $error_message );
+				if ( '' !== $error_message ) {
+					$message = $error_message;
+				} else {
+					$settings['forms_contracts'] = $merged_contracts;
+					$settings['onboarding']['provider_configured'][ $provider ] = true;
+					$this->options_repo->save_settings( $settings );
+					$labels  = $this->integration_labels();
+					$message = sprintf( __( '%s configuration saved.', 'burrow' ), (string) ( $labels[ $provider ] ?? $provider ) );
+					$step    = $this->next_config_step( $settings, $provider );
+				}
 			}
 		} elseif ( 'confirm_woocommerce' === $action ) {
 			$mode = isset( $_POST['woocommerce_mode'] ) ? sanitize_key( wp_unslash( $_POST['woocommerce_mode'] ) ) : 'track';
@@ -1470,7 +1490,13 @@ class Burrow_Admin {
 							<td><?php echo esc_html( $field_label ); ?></td>
 							<td><?php echo esc_html( $field_type ); ?></td>
 							<td><input type="text" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $this->label_to_canonical_key( $field_label ) ); ?>" /></td>
-							<td><select name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][target]"><option value="properties">properties</option><option value="tags" <?php selected( $suggested ); ?>>tags</option></select></td>
+							<td>
+								<select name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][target]">
+									<option value=""><?php esc_html_e( 'Select one', 'burrow' ); ?></option>
+									<option value="properties">properties</option>
+									<option value="tags">tags</option>
+								</select>
+							</td>
 							<td><input type="text" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][displayLabelOverride]" value="<?php echo esc_attr( $field_label ); ?>" /></td>
 						</tr>
 						<input type="hidden" name="gravity[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_id ); ?>" />
@@ -1486,6 +1512,7 @@ class Burrow_Admin {
 			(function () {
 				const forms = Array.from(document.querySelectorAll('.burrow-gravity-form-block'));
 				if (!forms.length) return;
+				const parentForm = forms[0].closest('form');
 				forms.forEach((block) => {
 					const modeInputs = Array.from(block.querySelectorAll('.burrow-form-mode-radio'));
 					const fields = Array.from(block.querySelectorAll('.burrow-form-field-checkbox'));
@@ -1513,6 +1540,34 @@ class Burrow_Admin {
 					fields.forEach((field) => field.addEventListener('change', sync));
 					modeInputs.forEach((input) => input.addEventListener('change', sync));
 					sync();
+				});
+				if (!parentForm) return;
+				parentForm.addEventListener('submit', (event) => {
+					for (const block of forms) {
+						const selectedMode = block.querySelector('.burrow-form-mode-radio:checked');
+						const mode = selectedMode ? selectedMode.value : 'off';
+						if (mode !== 'custom_fields') {
+							continue;
+						}
+						const heading = block.querySelector('h3');
+						const formName = heading && heading.textContent ? heading.textContent.trim() : 'This form';
+						const includedFields = Array.from(block.querySelectorAll('.burrow-form-field-checkbox:checked'));
+						if (!includedFields.length) {
+							event.preventDefault();
+							window.alert(formName + ': please include at least one field when using Custom fields mode.');
+							return;
+						}
+						for (const checkbox of includedFields) {
+							const row = checkbox.closest('tr');
+							const targetSelect = row ? row.querySelector('select[name*="[target]"]') : null;
+							if (targetSelect && !targetSelect.value) {
+								event.preventDefault();
+								window.alert(formName + ': please choose a target for each included field.');
+								targetSelect.focus();
+								return;
+							}
+						}
+					}
 				});
 			})();
 		</script>
@@ -1624,7 +1679,9 @@ class Burrow_Admin {
 									$field_type = (string) ( $field['type'] ?? 'text' );
 									$existing_map = isset( $mapped_lookup[ $field_external_id ] ) ? $mapped_lookup[ $field_external_id ] : array();
 									$checked = ! empty( $existing_map );
-									$target = isset( $existing_map['target'] ) && 'tags' === $existing_map['target'] ? 'tags' : 'properties';
+									$target = isset( $existing_map['target'] ) && in_array( (string) $existing_map['target'], array( 'properties', 'tags' ), true )
+										? (string) $existing_map['target']
+										: '';
 									$canonical = isset( $existing_map['canonicalKey'] ) ? (string) $existing_map['canonicalKey'] : $this->label_to_canonical_key( $field_name );
 									?>
 									<tr>
@@ -1632,7 +1689,13 @@ class Burrow_Admin {
 										<td><?php echo esc_html( $field_name ); ?></td>
 										<td><?php echo esc_html( $field_type ); ?></td>
 										<td><input type="text" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $canonical ); ?>" /></td>
-										<td><select name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][target]"><option value="properties" <?php selected( 'properties', $target ); ?>>properties</option><option value="tags" <?php selected( 'tags', $target ); ?>>tags</option></select></td>
+										<td>
+											<select name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][target]">
+												<option value="" <?php selected( '', $target ); ?>><?php esc_html_e( 'Select one', 'burrow' ); ?></option>
+												<option value="properties" <?php selected( 'properties', $target ); ?>>properties</option>
+												<option value="tags" <?php selected( 'tags', $target ); ?>>tags</option>
+											</select>
+										</td>
 									</tr>
 									<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_external_id ); ?>" />
 									<input type="hidden" name="provider_forms[forms][<?php echo esc_attr( $form_id ); ?>][fields][<?php echo esc_attr( $field_external_id ); ?>][sourceLabel]" value="<?php echo esc_attr( $field_name ); ?>" />
@@ -1651,6 +1714,7 @@ class Burrow_Admin {
 				(function () {
 					const forms = Array.from(document.querySelectorAll('.burrow-mapped-provider-form-block'));
 					if (!forms.length) return;
+					const parentForm = forms[0].closest('form');
 					forms.forEach((block) => {
 						const modeInputs = Array.from(block.querySelectorAll('.burrow-provider-mode-radio'));
 						const fields = Array.from(block.querySelectorAll('.burrow-provider-field-checkbox'));
@@ -1677,6 +1741,34 @@ class Burrow_Admin {
 						modeInputs.forEach((input) => input.addEventListener('change', sync));
 						fields.forEach((field) => field.addEventListener('change', sync));
 						sync();
+					});
+					if (!parentForm) return;
+					parentForm.addEventListener('submit', (event) => {
+						for (const block of forms) {
+							const selectedMode = block.querySelector('.burrow-provider-mode-radio:checked');
+							const mode = selectedMode ? selectedMode.value : 'off';
+							if (mode !== 'custom_fields') {
+								continue;
+							}
+							const heading = block.querySelector('h3');
+							const formName = heading && heading.textContent ? heading.textContent.trim() : 'This form';
+							const includedFields = Array.from(block.querySelectorAll('.burrow-provider-field-checkbox:checked'));
+							if (!includedFields.length) {
+								event.preventDefault();
+								window.alert(formName + ': please include at least one field when using Custom fields mode.');
+								return;
+							}
+							for (const checkbox of includedFields) {
+								const row = checkbox.closest('tr');
+								const targetSelect = row ? row.querySelector('select[name*="[target]"]') : null;
+								if (targetSelect && !targetSelect.value) {
+									event.preventDefault();
+									window.alert(formName + ': please choose a target for each included field.');
+									targetSelect.focus();
+									return;
+								}
+							}
+						}
 					});
 				})();
 			</script>
@@ -2203,10 +2295,11 @@ class Burrow_Admin {
 		return $items;
 	}
 
-	private function merge_gravity_contracts( array $settings, $gravity ) {
+	private function merge_gravity_contracts( array $settings, $gravity, &$error_message = '' ) {
 		$gravity   = is_array( $gravity ) ? $gravity : array();
 		$forms     = isset( $gravity['forms'] ) && is_array( $gravity['forms'] ) ? $gravity['forms'] : array();
 		$existing  = (array) ( $settings['forms_contracts'] ?? array() );
+		$error_message = '';
 		$contracts = array();
 		foreach ( $existing as $k => $v ) {
 			if ( 0 !== strpos( (string) $k, 'gravity-forms:' ) ) {
@@ -2231,19 +2324,36 @@ class Burrow_Admin {
 				if ( ! is_array( $f ) || empty( $f['include'] ) ) {
 					continue;
 				}
+				$target = $this->sanitize_mapping_target( $f['target'] ?? '' );
+				if ( '' === $target ) {
+					$form_name   = sanitize_text_field( (string) ( $form['formName'] ?? $id ) );
+					$field_label = sanitize_text_field( (string) ( $f['sourceLabel'] ?? $f['externalFieldId'] ?? __( 'field', 'burrow' ) ) );
+					$error_message = sprintf(
+						/* translators: 1: field label, 2: form name */
+						__( 'Select a target for "%1$s" in "%2$s".', 'burrow' ),
+						$field_label,
+						$form_name
+					);
+					return $existing;
+				}
 				$m[] = array(
 					'externalFieldId'      => sanitize_text_field( (string) ( $f['externalFieldId'] ?? '' ) ),
 					'sourceLabel'          => sanitize_text_field( (string) ( $f['sourceLabel'] ?? '' ) ),
 					'canonicalKey'         => sanitize_text_field( (string) ( $f['canonicalKey'] ?? '' ) ),
-					'target'               => 'tags' === ( $f['target'] ?? '' ) ? 'tags' : 'properties',
+					'target'               => $target,
 					'dataType'             => 'string',
-					'reportable'           => 'tags' === ( $f['target'] ?? '' ),
+					'reportable'           => 'tags' === $target,
 					'displayLabelOverride' => sanitize_text_field( (string) ( $f['displayLabelOverride'] ?? '' ) ),
 				);
 			}
 			if ( empty( $m ) && 'custom_fields' === $mode ) {
-				// Safety: keep forms only when fields are selected or count-only mode is enabled.
-				continue;
+				$form_name = sanitize_text_field( (string) ( $form['formName'] ?? $id ) );
+				$error_message = sprintf(
+					/* translators: %s: form name */
+					__( '"%s" is set to Custom fields. Include at least one field.', 'burrow' ),
+					$form_name
+				);
+				return $existing;
 			}
 			$form_id                = sanitize_text_field( (string) $id );
 			$prefixed_id            = \Burrow::prefixed_form_id( 'gravity-forms', $form_id );
@@ -2265,11 +2375,12 @@ class Burrow_Admin {
 		return $contracts;
 	}
 
-	private function merge_simple_provider_contracts( array $settings, $provider, $provider_forms ) {
+	private function merge_simple_provider_contracts( array $settings, $provider, $provider_forms, &$error_message = '' ) {
 		$provider      = sanitize_key( (string) $provider );
 		$provider_forms = is_array( $provider_forms ) ? $provider_forms : array();
 		$forms         = isset( $provider_forms['forms'] ) && is_array( $provider_forms['forms'] ) ? $provider_forms['forms'] : array();
 		$existing      = (array) ( $settings['forms_contracts'] ?? array() );
+		$error_message = '';
 		$contracts     = array();
 		$prefix        = $provider . ':';
 		foreach ( $existing as $key => $value ) {
@@ -2298,18 +2409,36 @@ class Burrow_Admin {
 					if ( ! is_array( $field ) || empty( $field['include'] ) ) {
 						continue;
 					}
+					$target = $this->sanitize_mapping_target( $field['target'] ?? '' );
+					if ( '' === $target ) {
+						$form_name   = sanitize_text_field( (string) ( $form['formName'] ?? $id ) );
+						$field_label = sanitize_text_field( (string) ( $field['sourceLabel'] ?? $field['externalFieldId'] ?? __( 'field', 'burrow' ) ) );
+						$error_message = sprintf(
+							/* translators: 1: field label, 2: form name */
+							__( 'Select a target for "%1$s" in "%2$s".', 'burrow' ),
+							$field_label,
+							$form_name
+						);
+						return $existing;
+					}
 					$mappings[] = array(
 						'externalFieldId'      => sanitize_text_field( (string) ( $field['externalFieldId'] ?? '' ) ),
 						'sourceLabel'          => sanitize_text_field( (string) ( $field['sourceLabel'] ?? '' ) ),
 						'canonicalKey'         => sanitize_text_field( (string) ( $field['canonicalKey'] ?? '' ) ),
-						'target'               => 'tags' === ( $field['target'] ?? '' ) ? 'tags' : 'properties',
+						'target'               => $target,
 						'dataType'             => sanitize_text_field( (string) ( $field['dataType'] ?? 'string' ) ),
-						'reportable'           => 'tags' === ( $field['target'] ?? '' ),
+						'reportable'           => 'tags' === $target,
 						'displayLabelOverride' => sanitize_text_field( (string) ( $field['sourceLabel'] ?? '' ) ),
 					);
 				}
 				if ( empty( $mappings ) ) {
-					continue;
+					$form_name = sanitize_text_field( (string) ( $form['formName'] ?? $id ) );
+					$error_message = sprintf(
+						/* translators: %s: form name */
+						__( '"%s" is set to Custom fields. Include at least one field.', 'burrow' ),
+						$form_name
+					);
+					return $existing;
 				}
 			}
 			$form_id = sanitize_text_field( (string) $id );
@@ -2666,7 +2795,9 @@ class Burrow_Admin {
 							$field_type = (string) ( $field['type'] ?? 'text' );
 							$existing   = isset( $mapped_lookup[ $field_id ] ) ? $mapped_lookup[ $field_id ] : array();
 							$checked    = ! empty( $existing );
-							$target     = isset( $existing['target'] ) && 'tags' === (string) $existing['target'] ? 'tags' : 'properties';
+							$target     = isset( $existing['target'] ) && in_array( (string) $existing['target'], array( 'properties', 'tags' ), true )
+								? (string) $existing['target']
+								: '';
 							$canonical  = isset( $existing['canonicalKey'] ) ? (string) $existing['canonicalKey'] : $this->label_to_canonical_key( $field_name );
 							?>
 							<tr>
@@ -2674,7 +2805,13 @@ class Burrow_Admin {
 								<td><?php echo esc_html( $field_name ); ?></td>
 								<td><?php echo esc_html( $field_type ); ?></td>
 								<td><input type="text" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][canonicalKey]" value="<?php echo esc_attr( $canonical ); ?>" /></td>
-								<td><select name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][target]"><option value="properties" <?php selected( 'properties', $target ); ?>>properties</option><option value="tags" <?php selected( 'tags', $target ); ?>>tags</option></select></td>
+								<td>
+									<select name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][target]">
+										<option value="" <?php selected( '', $target ); ?>><?php esc_html_e( 'Select one', 'burrow' ); ?></option>
+										<option value="properties" <?php selected( 'properties', $target ); ?>>properties</option>
+										<option value="tags" <?php selected( 'tags', $target ); ?>>tags</option>
+									</select>
+								</td>
 							</tr>
 							<input type="hidden" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][externalFieldId]" value="<?php echo esc_attr( $field_id ); ?>" />
 							<input type="hidden" name="operations_contract[fields][<?php echo esc_attr( $field_id ); ?>][sourceLabel]" value="<?php echo esc_attr( $field_name ); ?>" />
@@ -2721,6 +2858,29 @@ class Burrow_Admin {
 					};
 					modeInputs.forEach((input) => input.addEventListener('change', sync));
 					sync();
+					root.addEventListener('submit', (event) => {
+						const selectedMode = root.querySelector('.burrow-ops-mode-radio:checked');
+						const mode = selectedMode ? selectedMode.value : 'off';
+						if (mode !== 'custom_fields') {
+							return;
+						}
+						const includedFields = Array.from(root.querySelectorAll('.burrow-ops-field-checkbox:checked'));
+						if (!includedFields.length) {
+							event.preventDefault();
+							window.alert('Please include at least one field when using Custom fields mode.');
+							return;
+						}
+						for (const checkbox of includedFields) {
+							const row = checkbox.closest('tr');
+							const targetSelect = row ? row.querySelector('select[name*="[target]"]') : null;
+							if (targetSelect && !targetSelect.value) {
+								event.preventDefault();
+								window.alert('Please choose a target for each included field.');
+								targetSelect.focus();
+								return;
+							}
+						}
+					});
 				})();
 			</script>
 		<?php endif; ?>
@@ -2825,7 +2985,33 @@ class Burrow_Admin {
 		$mappings = array();
 		if ( 'custom_fields' === $mode && $this->operations_provider_supports_custom_fields( $provider ) ) {
 			$posted_fields = isset( $posted_contract['fields'] ) && is_array( $posted_contract['fields'] ) ? $posted_contract['fields'] : array();
-			$mappings      = $this->extract_operations_field_mappings( $posted_fields );
+			$included_count = 0;
+			foreach ( $posted_fields as $posted_field ) {
+				if ( is_array( $posted_field ) && ! empty( $posted_field['include'] ) ) {
+					$included_count++;
+				}
+			}
+			if ( 0 === $included_count ) {
+				$contract_name = sanitize_text_field( (string) ( $contracts[ $contract_key ]['formName'] ?? $contract_key ) );
+				$error_message = sprintf(
+					/* translators: %s: form name */
+					__( '"%s" is set to Custom fields. Include at least one field.', 'burrow' ),
+					$contract_name
+				);
+				return $settings;
+			}
+			$invalid_target_field = '';
+			$mappings             = $this->extract_operations_field_mappings( $posted_fields, $invalid_target_field );
+			if ( '' !== $invalid_target_field ) {
+				$contract_name = sanitize_text_field( (string) ( $contracts[ $contract_key ]['formName'] ?? $contract_key ) );
+				$error_message = sprintf(
+					/* translators: 1: field label, 2: form name */
+					__( 'Select a target for "%1$s" in "%2$s".', 'burrow' ),
+					$invalid_target_field,
+					$contract_name
+				);
+				return $settings;
+			}
 		}
 
 		$contracts[ $contract_key ]['enabled']       = true;
@@ -2838,8 +3024,9 @@ class Burrow_Admin {
 		return $settings;
 	}
 
-	private function extract_operations_field_mappings( array $posted_fields ) {
+	private function extract_operations_field_mappings( array $posted_fields, &$invalid_target_field = '' ) {
 		$mappings = array();
+		$invalid_target_field = '';
 		foreach ( $posted_fields as $field_id => $posted ) {
 			if ( ! is_array( $posted ) || empty( $posted['include'] ) ) {
 				continue;
@@ -2849,7 +3036,11 @@ class Burrow_Admin {
 			if ( '' === $external_field_id || '' === $canonical_key ) {
 				continue;
 			}
-			$target = isset( $posted['target'] ) && 'tags' === (string) $posted['target'] ? 'tags' : 'properties';
+			$target = $this->sanitize_mapping_target( $posted['target'] ?? '' );
+			if ( '' === $target ) {
+				$invalid_target_field = sanitize_text_field( (string) ( $posted['sourceLabel'] ?? $external_field_id ) );
+				return $mappings;
+			}
 			$mappings[] = array(
 				'externalFieldId' => $external_field_id,
 				'sourceLabel'     => sanitize_text_field( (string) ( $posted['sourceLabel'] ?? $external_field_id ) ),
@@ -2859,6 +3050,14 @@ class Burrow_Admin {
 			);
 		}
 		return $mappings;
+	}
+
+	private function sanitize_mapping_target( $target ) {
+		$target = sanitize_key( (string) $target );
+		if ( ! in_array( $target, array( 'properties', 'tags' ), true ) ) {
+			return '';
+		}
+		return $target;
 	}
 
 	private function sanitize_lucide_icon_key( $value ) {

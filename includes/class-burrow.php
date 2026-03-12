@@ -322,6 +322,10 @@ class Burrow {
 			return true;
 		}
 
+		if ( $this->read_boolean_env_flag( 'BURROW_FORCE_INGESTION' ) ) {
+			return false;
+		}
+
 		$environment = function_exists( 'wp_get_environment_type' )
 			? strtolower( (string) wp_get_environment_type() )
 			: '';

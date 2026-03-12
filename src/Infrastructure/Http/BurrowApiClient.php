@@ -93,7 +93,9 @@ class BurrowApiClient {
 			$client  = $this->sdk_client();
 			$request = new \Burrow\Sdk\Contracts\OnboardingLinkRequest(
 				isset( $payload['site'] ) && is_array( $payload['site'] ) ? $payload['site'] : array(),
-				isset( $payload['selection'] ) && is_array( $payload['selection'] ) ? $payload['selection'] : array()
+				isset( $payload['selection'] ) && is_array( $payload['selection'] ) ? $payload['selection'] : array(),
+				isset( $payload['platform'] ) ? (string) $payload['platform'] : null,
+				isset( $payload['capabilities'] ) && is_array( $payload['capabilities'] ) ? $payload['capabilities'] : array()
 			);
 			$response = $client->link( $request );
 			$body     = $this->link_response_to_array( $response );
