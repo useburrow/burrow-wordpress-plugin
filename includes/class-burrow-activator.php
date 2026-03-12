@@ -70,6 +70,8 @@ class Burrow_Activator {
 	 * @return void
 	 */
 	private static function schedule_cron_jobs() {
+		add_filter( 'cron_schedules', array( __CLASS__, 'register_weekly_schedule' ) );
+
 		if ( ! wp_next_scheduled( 'burrow_outbox_worker' ) ) {
 			wp_schedule_event( time() + 60, 'hourly', 'burrow_outbox_worker' );
 		}
@@ -79,7 +81,7 @@ class Burrow_Activator {
 		}
 
 		if ( ! wp_next_scheduled( 'burrow_system_stack_snapshot' ) ) {
-			wp_schedule_event( time() + 900, 'daily', 'burrow_system_stack_snapshot' );
+			wp_schedule_event( time() + 900, 'weekly', 'burrow_system_stack_snapshot' );
 		}
 
 		if ( ! wp_next_scheduled( 'burrow_outbox_cleanup' ) ) {
@@ -89,5 +91,23 @@ class Burrow_Activator {
 		if ( ! wp_next_scheduled( 'burrow_checkout_abandonment_scan' ) ) {
 			wp_schedule_event( time() + 180, 'hourly', 'burrow_checkout_abandonment_scan' );
 		}
+
+		remove_filter( 'cron_schedules', array( __CLASS__, 'register_weekly_schedule' ) );
+	}
+
+	/**
+	 * Register weekly cron schedule during activation.
+	 *
+	 * @param array<string,mixed> $schedules Existing schedules.
+	 * @return array<string,mixed>
+	 */
+	public static function register_weekly_schedule( $schedules ) {
+		if ( ! isset( $schedules['weekly'] ) ) {
+			$schedules['weekly'] = array(
+				'interval' => 7 * DAY_IN_SECONDS,
+				'display'  => __( 'Once Weekly', 'burrow' ),
+			);
+		}
+		return $schedules;
 	}
 }

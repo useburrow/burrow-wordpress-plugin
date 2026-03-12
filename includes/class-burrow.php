@@ -92,6 +92,7 @@ class Burrow {
 		$this->loader->add_action( 'wp_enqueue_scripts', $public, 'enqueue_scripts' );
 
 		$this->loader->add_action( 'cron_schedules', $this, 'register_cron_schedules' );
+		$this->loader->add_action( 'rest_api_init', $this, 'register_rest_routes' );
 
 		// Forms hooks.
 		$this->loader->add_action( 'gform_after_submission', $this, 'handle_gravity_submission', 10, 2 );
@@ -136,6 +137,12 @@ class Burrow {
 				'display'  => __( 'Every Minute', 'burrow' ),
 			);
 		}
+		if ( ! isset( $schedules['weekly'] ) ) {
+			$schedules['weekly'] = array(
+				'interval' => 7 * DAY_IN_SECONDS,
+				'display'  => __( 'Once Weekly', 'burrow' ),
+			);
+		}
 		return $schedules;
 	}
 
@@ -164,8 +171,13 @@ class Burrow {
 		if ( ! wp_next_scheduled( 'burrow_system_heartbeat' ) ) {
 			wp_schedule_event( time() + 300, 'hourly', 'burrow_system_heartbeat' );
 		}
-		if ( ! wp_next_scheduled( 'burrow_system_stack_snapshot' ) ) {
-			wp_schedule_event( time() + 900, 'daily', 'burrow_system_stack_snapshot' );
+		$stack_snapshot_event = wp_get_scheduled_event( 'burrow_system_stack_snapshot' );
+		if ( $stack_snapshot_event && 'weekly' !== $stack_snapshot_event->schedule ) {
+			wp_unschedule_event( $stack_snapshot_event->timestamp, 'burrow_system_stack_snapshot' );
+			$stack_snapshot_event = null;
+		}
+		if ( ! $stack_snapshot_event ) {
+			wp_schedule_event( time() + 900, 'weekly', 'burrow_system_stack_snapshot' );
 		}
 		if ( ! wp_next_scheduled( 'burrow_outbox_cleanup' ) ) {
 			wp_schedule_event( time() + 1800, 'daily', 'burrow_outbox_cleanup' );
@@ -209,9 +221,148 @@ class Burrow {
 		$this->delivery = new \Burrow\Sdk\Outbox\OutboxDelivery(
 			$this->outbox_repo,
 			$sdk_client,
-			$max_attempts
+			$max_attempts,
+			null,
+			$this->should_skip_network_send()
 		);
 		return $this->delivery;
+	}
+
+	/**
+	 * Register REST routes.
+	 *
+	 * @return void
+	 */
+	public function register_rest_routes() {
+		register_rest_route(
+			'burrow/v1',
+			'/stack-snapshot',
+			array(
+				'methods'             => \WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'handle_stack_snapshot_refresh_request' ),
+				'permission_callback' => array( $this, 'authorize_stack_snapshot_refresh_request' ),
+			)
+		);
+	}
+
+	/**
+	 * Authorize stack snapshot refresh callback.
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return bool
+	 */
+	public function authorize_stack_snapshot_refresh_request( \WP_REST_Request $request ) {
+		$authorization = (string) $request->get_header( 'authorization' );
+		if ( 0 !== stripos( $authorization, 'Bearer ' ) ) {
+			return false;
+		}
+		$token = trim( substr( $authorization, 7 ) );
+		if ( '' === $token ) {
+			return false;
+		}
+		$settings      = $this->options_repo->get_settings();
+		$ingestion_key = isset( $settings['ingestion_key']['key'] ) ? trim( (string) $settings['ingestion_key']['key'] ) : '';
+		if ( '' === $ingestion_key ) {
+			return false;
+		}
+		return hash_equals( $ingestion_key, $token );
+	}
+
+	/**
+	 * Handle manual stack snapshot refresh callback.
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response
+	 */
+	public function handle_stack_snapshot_refresh_request( \WP_REST_Request $_request ) {
+		if ( $this->is_stack_snapshot_refresh_rate_limited() ) {
+			return new \WP_REST_Response(
+				array(
+					'ok'    => false,
+					'error' => 'rate_limited',
+				),
+				429
+			);
+		}
+
+		do_action( 'burrow_system_stack_snapshot' );
+		do_action( 'burrow_outbox_worker' );
+
+		return new \WP_REST_Response(
+			array(
+				'ok' => true,
+			),
+			200
+		);
+	}
+
+	/**
+	 * Check and set simple refresh throttling.
+	 *
+	 * @return bool True when throttled.
+	 */
+	private function is_stack_snapshot_refresh_rate_limited() {
+		$cache_key = 'burrow_stack_snapshot_refresh_lock';
+		$locked    = get_transient( $cache_key );
+		if ( false !== $locked ) {
+			return true;
+		}
+		set_transient( $cache_key, 1, MINUTE_IN_SECONDS );
+		return false;
+	}
+
+	/**
+	 * Determine whether network sending should be skipped.
+	 * Local/dev/test environments keep outbox visibility but avoid remote dispatch.
+	 *
+	 * @return bool
+	 */
+	private function should_skip_network_send() {
+		if ( $this->read_boolean_env_flag( 'BURROW_INGESTION_DISABLED' ) ) {
+			return true;
+		}
+
+		$environment = function_exists( 'wp_get_environment_type' )
+			? strtolower( (string) wp_get_environment_type() )
+			: '';
+		return in_array( $environment, array( 'local', 'development', 'test' ), true );
+	}
+
+	/**
+	 * Read boolean environment/config flag from constants or env.
+	 *
+	 * @param string $name Flag name.
+	 * @return bool
+	 */
+	private function read_boolean_env_flag( $name ) {
+		if ( defined( $name ) ) {
+			return $this->to_boolean( constant( $name ) );
+		}
+		$env_value = getenv( $name );
+		if ( false === $env_value ) {
+			return false;
+		}
+		return $this->to_boolean( $env_value );
+	}
+
+	/**
+	 * Normalize scalar-like values into a strict boolean.
+	 *
+	 * @param mixed $value Raw value.
+	 * @return bool
+	 */
+	private function to_boolean( $value ) {
+		if ( is_bool( $value ) ) {
+			return $value;
+		}
+		if ( is_int( $value ) || is_float( $value ) ) {
+			return 1 === (int) $value;
+		}
+		if ( ! is_string( $value ) ) {
+			return false;
+		}
+		$normalized = strtolower( trim( $value ) );
+		return in_array( $normalized, array( '1', 'true', 'yes', 'on' ), true );
 	}
 
 	/**
@@ -422,7 +573,7 @@ class Burrow {
 				$routing_resolver
 			);
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow ecommerce] order.placed build failed: ' . $e->getMessage() );
+			error_log( '[Burrow ecommerce] ecommerce.order.placed build failed: ' . $e->getMessage() );
 			return;
 		}
 
@@ -437,7 +588,7 @@ class Burrow {
 					$routing_resolver
 				);
 			} catch ( \Throwable $e ) {
-				error_log( '[Burrow ecommerce] item.purchased build failed: ' . $e->getMessage() );
+				error_log( '[Burrow ecommerce] ecommerce.item.purchased build failed: ' . $e->getMessage() );
 				continue;
 			}
 		}
@@ -459,7 +610,7 @@ class Burrow {
 	}
 
 	/**
-	 * Check if a completing order was previously abandoned and build a cart.recovered envelope.
+	 * Check if a completing order was previously abandoned and build an ecommerce.cart.recovered envelope.
 	 *
 	 * @param object                                $order            WC_Order.
 	 * @param array<string,mixed>                   $data             Normalized order data.
@@ -512,7 +663,7 @@ class Burrow {
 		try {
 			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartRecoveredEvent( $input, $routing_resolver );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] cart.recovered build failed: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.cart.recovered build failed: ' . $e->getMessage() );
 			return null;
 		}
 
@@ -623,7 +774,7 @@ class Burrow {
 	// ────────────────────────────────────────────────────
 
 	/**
-	 * Handle cart.item.added via woocommerce_add_to_cart hook.
+	 * Handle ecommerce.cart.added via woocommerce_add_to_cart hook.
 	 *
 	 * @param string $cart_item_key  Cart item key.
 	 * @param int    $product_id     Product ID.
@@ -656,7 +807,7 @@ class Burrow {
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] cart.item.added skipped: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.cart.added skipped: ' . $e->getMessage() );
 			return;
 		}
 
@@ -685,7 +836,7 @@ class Burrow {
 		try {
 			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartItemAddedEvent( $input, $routing_resolver );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] cart.item.added build failed: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.cart.added build failed: ' . $e->getMessage() );
 			return;
 		}
 
@@ -699,7 +850,7 @@ class Burrow {
 	}
 
 	/**
-	 * Handle cart.item.removed via woocommerce_cart_item_removed hook.
+	 * Handle ecommerce.cart.removed via woocommerce_cart_item_removed hook.
 	 *
 	 * @param string $cart_item_key Cart item key that was removed.
 	 * @param object $cart          WC_Cart instance.
@@ -734,7 +885,7 @@ class Burrow {
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] cart.item.removed skipped: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.cart.removed skipped: ' . $e->getMessage() );
 			return;
 		}
 
@@ -760,7 +911,7 @@ class Burrow {
 		try {
 			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartItemRemovedEvent( $input, $routing_resolver );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] cart.item.removed build failed: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.cart.removed build failed: ' . $e->getMessage() );
 			return;
 		}
 
@@ -774,7 +925,7 @@ class Burrow {
 	}
 
 	/**
-	 * Handle checkout.started via woocommerce_checkout_init hook.
+	 * Handle ecommerce.checkout.started via woocommerce_checkout_init hook.
 	 * Emits once per WC session to avoid duplicate events on page reloads.
 	 *
 	 * @param mixed $checkout WC_Checkout instance.
@@ -807,7 +958,7 @@ class Burrow {
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] checkout.started skipped: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.checkout.started skipped: ' . $e->getMessage() );
 			return;
 		}
 
@@ -828,7 +979,7 @@ class Burrow {
 		try {
 			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCheckoutStartedEvent( $input, $routing_resolver );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] checkout.started build failed: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.checkout.started build failed: ' . $e->getMessage() );
 			return;
 		}
 
@@ -871,7 +1022,7 @@ class Burrow {
 	}
 
 	/**
-	 * WP-Cron: scan for abandoned checkouts and emit checkout.abandoned events.
+	 * WP-Cron: scan for abandoned checkouts and emit ecommerce.checkout.abandoned events.
 	 * Always queued (inherently async).
 	 */
 	public function run_checkout_abandonment_scan() {
@@ -899,7 +1050,7 @@ class Burrow {
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
 		} catch ( \Throwable $e ) {
-			error_log( '[Burrow funnel] checkout.abandoned scan skipped: ' . $e->getMessage() );
+			error_log( '[Burrow funnel] ecommerce.checkout.abandoned scan skipped: ' . $e->getMessage() );
 			return;
 		}
 
@@ -947,7 +1098,7 @@ class Burrow {
 				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCheckoutAbandonedEvent( $input, $routing_resolver );
 				$newly_emitted[ $session_key ] = gmdate( 'c' );
 			} catch ( \Throwable $e ) {
-				error_log( '[Burrow funnel] checkout.abandoned build failed for ' . $session_key . ': ' . $e->getMessage() );
+				error_log( '[Burrow funnel] ecommerce.checkout.abandoned build failed for ' . $session_key . ': ' . $e->getMessage() );
 			}
 		}
 
@@ -1001,7 +1152,7 @@ class Burrow {
 	}
 
 	/**
-	 * Build input array for order.placed SDK envelope builder.
+	 * Build input array for ecommerce.order.placed SDK envelope builder.
 	 *
 	 * @param array<string,mixed> $data         Normalized order data.
 	 * @param string|null         $submitted_at ISO timestamp.
@@ -1049,7 +1200,7 @@ class Burrow {
 	}
 
 	/**
-	 * Build input array for item.purchased SDK envelope builder.
+	 * Build input array for ecommerce.item.purchased SDK envelope builder.
 	 *
 	 * @param array<string,mixed> $item           Normalized item data.
 	 * @param array<string,mixed> $data           Normalized order data.
@@ -1669,7 +1820,7 @@ class Burrow {
 					$routing_resolver
 				);
 			} catch ( \Throwable $e ) {
-				error_log( '[Burrow backfill] order.placed build failed for order ' . $data['orderId'] . ': ' . $e->getMessage() );
+				error_log( '[Burrow backfill] ecommerce.order.placed build failed for order ' . $data['orderId'] . ': ' . $e->getMessage() );
 				continue;
 			}
 			foreach ( (array) $data['items'] as $item ) {
@@ -1680,7 +1831,7 @@ class Burrow {
 						$routing_resolver
 					);
 				} catch ( \Throwable $e ) {
-					error_log( '[Burrow backfill] item.purchased build failed: ' . $e->getMessage() );
+					error_log( '[Burrow backfill] ecommerce.item.purchased build failed: ' . $e->getMessage() );
 					continue;
 				}
 			}

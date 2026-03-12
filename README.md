@@ -20,7 +20,7 @@ Production-oriented WordPress plugin integration for Burrow onboarding, contract
   - WooCommerce (`order.placed`, `item.purchased`)
 - System events:
   - `heartbeat.ping` (hourly)
-  - `stack.snapshot` (daily)
+  - `stack.snapshot` (weekly)
 - Durable local outbox:
   - enqueue-first delivery (never block user submission flow)
   - retry on retryable failures with exponential backoff
@@ -96,7 +96,7 @@ All dispatched events are scoped to the linked `projectId`.
 
 - `burrow_outbox_worker` (minute)
 - `burrow_system_heartbeat` (hourly)
-- `burrow_system_stack_snapshot` (daily)
+- `burrow_system_stack_snapshot` (weekly)
 - `burrow_outbox_cleanup` (daily)
 
 ## Development
