@@ -58,7 +58,7 @@ class Burrow_Admin {
 
 		if ( $completed ) {
 			add_submenu_page( $parent_slug, __( 'Dashboard', 'burrow' ), __( 'Dashboard', 'burrow' ), 'manage_options', 'burrow-dashboard', array( $this, 'render_dashboard_page' ) );
-			add_submenu_page( $parent_slug, __( 'Setup', 'burrow' ), __( 'Setup', 'burrow' ), 'manage_options', 'burrow-setup', array( $this, 'render_setup_summary_page' ) );
+			add_submenu_page( $parent_slug, __( 'Summary', 'burrow' ), __( 'Summary', 'burrow' ), 'manage_options', 'burrow-setup', array( $this, 'render_setup_summary_page' ) );
 		} else {
 			add_submenu_page( $parent_slug, __( 'Setup', 'burrow' ), __( 'Setup', 'burrow' ), 'manage_options', 'burrow-setup', array( $this, 'render_onboarding_page' ) );
 		}
@@ -290,7 +290,9 @@ class Burrow_Admin {
 				$queue_error = (string) $window['error'];
 			}
 			if ( '' === $queue_error ) {
-				$active_contract_keys = $this->build_backfill_active_keys( $settings );
+				$posted_sources       = isset( $_POST['backfill_sources'] ) ? wp_unslash( $_POST['backfill_sources'] ) : array();
+				$selected_sources     = $this->sanitize_selected_backfill_sources( $settings, $posted_sources );
+				$active_contract_keys = $this->build_backfill_active_keys( $settings, $selected_sources );
 				if ( empty( $active_contract_keys ) ) {
 					$message = __( 'No configured forms or WooCommerce tracking found for backfill.', 'burrow' );
 				} else {
@@ -302,7 +304,8 @@ class Burrow_Admin {
 						'windowPreset'       => (string) $window['preset'],
 						'windowStart'        => $window_start,
 						'windowEnd'          => $window_end,
-						'scope'              => 'all_configured_forms',
+						'scope'              => 'selected_sources',
+						'selectedSources'    => $selected_sources,
 						'cursor'             => array(),
 						'activeContractKeys' => $active_contract_keys,
 						'totalForms'         => count( $active_contract_keys ),
@@ -333,7 +336,9 @@ class Burrow_Admin {
 			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
 			$job['status']    = 'queued';
 			$job['lastError'] = '';
-			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings );
+			$selected_sources = isset( $job['selectedSources'] ) && is_array( $job['selectedSources'] ) ? $job['selectedSources'] : array();
+			$job['selectedSources']    = $this->sanitize_selected_backfill_sources( $settings, $selected_sources );
+			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings, $job['selectedSources'] );
 			$job['totalForms']         = count( (array) $job['activeContractKeys'] );
 			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
@@ -346,7 +351,9 @@ class Burrow_Admin {
 			$job  = isset( $settings['backfill'] ) && is_array( $settings['backfill'] ) ? $settings['backfill'] : array();
 			$job['status']          = 'queued';
 			$job['cursor']          = array();
-			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings );
+			$selected_sources       = isset( $job['selectedSources'] ) && is_array( $job['selectedSources'] ) ? $job['selectedSources'] : array();
+			$job['selectedSources'] = $this->sanitize_selected_backfill_sources( $settings, $selected_sources );
+			$job['activeContractKeys'] = $this->build_backfill_active_keys( $settings, $job['selectedSources'] );
 			$job['totalForms']         = count( (array) $job['activeContractKeys'] );
 			$job['completedForms']  = 0;
 			$job['processedEvents'] = 0;
@@ -831,7 +838,7 @@ class Burrow_Admin {
 							<td>
 								<input id="outbox_retention_days" name="outbox_retention_days" type="number" min="1" max="365" step="1" value="<?php echo esc_attr( (string) $retention_days ); ?>" class="small-text" />
 								<span><?php esc_html_e( 'days', 'burrow' ); ?></span>
-								<p class="description"><?php esc_html_e( 'Sent and failed records are cleaned up daily after this retention window.', 'burrow' ); ?></p>
+								<p class="description"><?php esc_html_e( 'Sent and failed records are cleaned up daily after this retention window. Longer retention preserves duplicate protection for reruns.', 'burrow' ); ?></p>
 							</td>
 						</tr>
 						<?php if ( $woo_active ) : ?>
@@ -860,6 +867,10 @@ class Burrow_Admin {
 		$support_notes = $this->build_backfill_support_notes( $settings );
 		$preset_labels = $this->backfill_window_presets();
 		$current_preset = isset( $job['windowPreset'] ) ? sanitize_key( (string) $job['windowPreset'] ) : 'last_30_days';
+		$source_labels  = $this->backfill_source_labels( $settings );
+		$selected_sources = isset( $job['selectedSources'] ) && is_array( $job['selectedSources'] )
+			? $this->sanitize_selected_backfill_sources( $settings, $job['selectedSources'] )
+			: array_keys( $source_labels );
 		?>
 		<?php if ( ! empty( $support_notes ) ) : ?>
 			<ul class="description" style="margin:0 0 10px 18px;list-style:disc;">
@@ -869,61 +880,45 @@ class Burrow_Admin {
 			</ul>
 		<?php endif; ?>
 
-		<?php if ( in_array( $status, array( 'queued', 'running' ), true ) ) : ?>
-			<p>
-				<?php echo $this->render_status_badge( $status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-				<?php echo esc_html( sprintf( __( '%d / %d sources processed, %d events sent', 'burrow' ), (int) ( $job['completedForms'] ?? 0 ), (int) ( $job['totalForms'] ?? 0 ), (int) ( $job['processedEvents'] ?? 0 ) ) ); ?>
-			</p>
-			<?php if ( ! empty( $job['updatedAt'] ) ) : ?>
-				<p class="description"><?php echo esc_html( sprintf( __( 'Last update: %s', 'burrow' ), (string) $job['updatedAt'] ) ); ?></p>
-			<?php endif; ?>
+		<p>
+			<?php echo $this->render_status_badge( $status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+			<?php echo esc_html( sprintf( __( '%d / %d sources processed, %d events sent', 'burrow' ), (int) ( $job['completedForms'] ?? 0 ), (int) ( $job['totalForms'] ?? 0 ), (int) ( $job['processedEvents'] ?? 0 ) ) ); ?>
+		</p>
+		<?php if ( ! empty( $job['updatedAt'] ) ) : ?>
+			<p class="description"><?php echo esc_html( sprintf( __( 'Last update: %s', 'burrow' ), (string) $job['updatedAt'] ) ); ?></p>
+		<?php endif; ?>
+		<?php if ( 'failed' === $status && ! empty( $job['lastError'] ) ) : ?>
+			<p class="description"><?php echo esc_html( (string) $job['lastError'] ); ?></p>
+		<?php endif; ?>
 
-		<?php elseif ( 'failed' === $status ) : ?>
-			<p>
-				<?php echo $this->render_status_badge( 'failed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-				<?php if ( ! empty( $job['lastError'] ) ) : ?>
-					<span class="description"><?php echo esc_html( (string) $job['lastError'] ); ?></span>
-				<?php endif; ?>
-			</p>
-			<p>
-				<form method="post" style="display:inline-block;margin-right:6px;">
-					<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-					<input type="hidden" name="burrow_action" value="resume_backfill" />
-					<button type="submit" class="button button-secondary"><?php esc_html_e( 'Resume', 'burrow' ); ?></button>
-				</form>
-				<form method="post" style="display:inline-block;">
-					<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-					<input type="hidden" name="burrow_action" value="retry_backfill" />
-					<button type="submit" class="button button-secondary"><?php esc_html_e( 'Retry from Start', 'burrow' ); ?></button>
-				</form>
-			</p>
-
-		<?php elseif ( 'completed' === $status ) : ?>
-			<p>
-				<?php echo $this->render_status_badge( 'completed' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-				<?php echo esc_html( sprintf( __( '%d events processed', 'burrow' ), (int) ( $job['processedEvents'] ?? 0 ) ) ); ?>
-				<?php if ( ! empty( $job['completedAt'] ) ) : ?>
-					<span class="description">&mdash; <?php echo esc_html( (string) $job['completedAt'] ); ?></span>
-				<?php endif; ?>
-			</p>
-			<form method="post" style="display:inline-block;">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="retry_backfill" />
-				<button type="submit" class="button button-secondary"><?php esc_html_e( 'Run Again', 'burrow' ); ?></button>
-			</form>
-
-		<?php else : ?>
-			<form method="post">
-				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
-				<input type="hidden" name="burrow_action" value="queue_backfill" />
-				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-					<select name="backfill_window_preset">
-						<?php foreach ( $preset_labels as $value => $label ) : ?>
-							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $value, $current_preset ); ?>><?php echo esc_html( $label ); ?></option>
-						<?php endforeach; ?>
-					</select>
-					<button type="submit" class="button button-primary"><?php esc_html_e( 'Queue Backfill', 'burrow' ); ?></button>
+		<form method="post" style="margin-top:10px;">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="queue_backfill" />
+			<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+				<select name="backfill_window_preset">
+					<?php foreach ( $preset_labels as $value => $label ) : ?>
+						<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $value, $current_preset ); ?>><?php echo esc_html( $label ); ?></option>
+					<?php endforeach; ?>
+				</select>
+				<span><?php esc_html_e( 'Run sources:', 'burrow' ); ?></span>
+				<div role="group" aria-label="<?php esc_attr_e( 'Backfill sources', 'burrow' ); ?>">
+					<?php foreach ( $source_labels as $source_key => $source_label ) : ?>
+						<label style="display:inline-flex;align-items:center;gap:6px;margin-right:10px;">
+							<input type="checkbox" name="backfill_sources[]" value="<?php echo esc_attr( $source_key ); ?>" <?php checked( in_array( $source_key, $selected_sources, true ) ); ?> />
+							<?php echo esc_html( $source_label ); ?>
+						</label>
+					<?php endforeach; ?>
 				</div>
+				<button type="submit" class="button button-primary"><?php esc_html_e( 'Start New Backfill', 'burrow' ); ?></button>
+			</div>
+		</form>
+		<p class="description" style="margin-top:8px;"><?php esc_html_e( 'Reruns use deterministic event keys. Duplicate protection depends on outbox retention history.', 'burrow' ); ?></p>
+
+		<?php if ( in_array( $status, array( 'failed', 'running' ), true ) ) : ?>
+			<form method="post" style="display:inline-block;margin-top:8px;">
+				<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+				<input type="hidden" name="burrow_action" value="resume_backfill" />
+				<button type="submit" class="button button-secondary"><?php esc_html_e( 'Resume Previous Run', 'burrow' ); ?></button>
 			</form>
 		<?php endif; ?>
 		<?php
@@ -1055,21 +1050,10 @@ class Burrow_Admin {
 			<?php endif; ?>
 
 			<h2 style="margin-top:24px;"><?php esc_html_e( 'Data Backfill', 'burrow' ); ?></h2>
-			<?php if ( in_array( $bf_status, array( 'completed', 'running', 'queued' ), true ) ) : ?>
-				<p>
-					<?php echo $this->render_status_badge( $bf_status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-					<?php if ( ! empty( $job['processedEvents'] ) ) : ?>
-						<?php echo esc_html( sprintf( __( '%d events processed', 'burrow' ), (int) $job['processedEvents'] ) ); ?>
-					<?php endif; ?>
-					&mdash;
-					<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard#backfill' ) ); ?>"><?php esc_html_e( 'Manage backfill', 'burrow' ); ?></a>
-				</p>
-			<?php else : ?>
-				<p class="description"><?php esc_html_e( 'No backfill has been run yet. Import historical data into Burrow to start with a complete dataset.', 'burrow' ); ?></p>
-				<p style="margin-top:8px;">
-					<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard#backfill' ) ); ?>"><?php esc_html_e( 'Queue Backfill', 'burrow' ); ?></a>
-				</p>
-			<?php endif; ?>
+			<p>
+				<?php echo $this->render_status_badge( $bf_status ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard#backfill' ) ); ?>"><?php esc_html_e( 'Manage in Dashboard', 'burrow' ); ?></a>
+			</p>
 
 			<p style="margin-top:20px;">
 				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-dashboard' ) ); ?>"><?php esc_html_e( 'Go to Dashboard', 'burrow' ); ?></a>
@@ -1125,7 +1109,7 @@ class Burrow_Admin {
 				<input type="hidden" name="page" value="burrow-outbox" />
 				<input type="hidden" name="status" value="<?php echo esc_attr( $status ); ?>" />
 				<label for="burrow-outbox-search" class="screen-reader-text"><?php esc_html_e( 'Search outbox', 'burrow' ); ?></label>
-				<input id="burrow-outbox-search" type="search" name="q" value="<?php echo esc_attr( $search ); ?>" placeholder="<?php esc_attr_e( 'Search event, key, or error', 'burrow' ); ?>" class="regular-text" />
+				<input id="burrow-outbox-search" type="search" name="q" value="<?php echo esc_attr( $search ); ?>" placeholder="<?php esc_attr_e( 'Search event, key, channel, payload, or error', 'burrow' ); ?>" class="regular-text" />
 				<?php submit_button( __( 'Search', 'burrow' ), 'secondary', '', false ); ?>
 				<?php if ( '' !== $search ) : ?>
 					<a class="button" href="<?php echo esc_url( add_query_arg( array( 'page' => 'burrow-outbox', 'status' => $status ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Clear', 'burrow' ); ?></a>
@@ -1973,7 +1957,7 @@ class Burrow_Admin {
 		$job['status']    = 'failed';
 		$job['updatedAt'] = gmdate( 'c' );
 		if ( empty( $job['lastError'] ) ) {
-			$job['lastError'] = __( 'Backfill worker appears idle. Resume or retry to continue.', 'burrow' );
+			$job['lastError'] = __( 'Backfill worker appears idle. Resume previous run or start a new backfill.', 'burrow' );
 		}
 		$settings['backfill'] = $job;
 		$this->options_repo->save_settings( $settings );
@@ -2018,6 +2002,8 @@ class Burrow_Admin {
 				);
 			}
 		}
+
+		$notes[] = __( 'Backfill uses deterministic event keys. Duplicate protection depends on outbox retention history.', 'burrow' );
 
 		return $notes;
 	}
@@ -3074,17 +3060,49 @@ class Burrow_Admin {
 	 * @param array<string,mixed> $settings Plugin settings.
 	 * @return string[]
 	 */
-	private function build_backfill_active_keys( array $settings ) {
-		$keys = $this->get_enabled_contract_keys( (array) ( $settings['forms_contracts'] ?? array() ) );
+	private function build_backfill_active_keys( array $settings, array $selected_sources = array() ) {
+		$selected_sources = $this->sanitize_selected_backfill_sources( $settings, $selected_sources );
+		$keys             = array();
+		if ( in_array( 'forms', $selected_sources, true ) ) {
+			$keys = array_merge( $keys, $this->get_enabled_contract_keys( (array) ( $settings['forms_contracts'] ?? array() ) ) );
+		}
+		if ( in_array( 'ecommerce', $selected_sources, true ) ) {
+			$keys[] = 'woocommerce:orders';
+		}
+		return array_values( array_unique( $keys ) );
+	}
+
+	private function backfill_source_labels( array $settings ) {
+		$labels = array();
+		$form_keys = $this->get_enabled_contract_keys( (array) ( $settings['forms_contracts'] ?? array() ) );
+		if ( ! empty( $form_keys ) ) {
+			$labels['forms'] = __( 'Forms', 'burrow' );
+		}
 		$selected_integrations = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
 			? $settings['onboarding']['selected_integrations']
 			: array();
 		$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
 		$woo_enabled = 'track' === $woo_mode || in_array( 'woocommerce', $selected_integrations, true );
 		if ( $woo_enabled ) {
-			$keys[] = 'woocommerce:orders';
+			$labels['ecommerce'] = __( 'WooCommerce', 'burrow' );
 		}
-		return array_values( array_unique( $keys ) );
+		return $labels;
+	}
+
+	private function sanitize_selected_backfill_sources( array $settings, $selected_sources ) {
+		$available = array_keys( $this->backfill_source_labels( $settings ) );
+		$selected  = is_array( $selected_sources ) ? $selected_sources : array();
+		$selected  = array_map(
+			static function ( $source ) {
+				return sanitize_key( (string) $source );
+			},
+			$selected
+		);
+		$selected  = array_values( array_intersect( $selected, $available ) );
+		if ( empty( $selected ) ) {
+			return $available;
+		}
+		return $selected;
 	}
 
 	private function reset_onboarding_state( $state ) {

@@ -304,7 +304,9 @@ class WpOutboxRepository implements OutboxStoreInterface {
 		}
 		if ( '' !== $search ) {
 			$like = '%' . $wpdb->esc_like( $search ) . '%';
-			$where[] = '(event_name LIKE %s OR event_key LIKE %s OR last_error LIKE %s)';
+			$where[] = '(event_name LIKE %s OR event_key LIKE %s OR channel LIKE %s OR payload_json LIKE %s OR last_error LIKE %s)';
+			$args[]  = $like;
+			$args[]  = $like;
 			$args[]  = $like;
 			$args[]  = $like;
 			$args[]  = $like;
@@ -341,7 +343,9 @@ class WpOutboxRepository implements OutboxStoreInterface {
 		}
 		if ( '' !== $search ) {
 			$like = '%' . $wpdb->esc_like( $search ) . '%';
-			$where[] = '(event_name LIKE %s OR event_key LIKE %s OR last_error LIKE %s)';
+			$where[] = '(event_name LIKE %s OR event_key LIKE %s OR channel LIKE %s OR payload_json LIKE %s OR last_error LIKE %s)';
+			$args[]  = $like;
+			$args[]  = $like;
 			$args[]  = $like;
 			$args[]  = $like;
 			$args[]  = $like;

@@ -1440,14 +1440,19 @@ class Burrow {
 		$contracts = isset( $settings['forms_contracts'] ) && is_array( $settings['forms_contracts'] ) ? $settings['forms_contracts'] : array();
 		$keys      = isset( $job['activeContractKeys'] ) && is_array( $job['activeContractKeys'] ) ? $job['activeContractKeys'] : array();
 		$current_keys = $this->get_backfillable_contract_keys( $contracts );
-		$keys         = array_values( array_unique( array_merge( $keys, $current_keys ) ) );
+		$scope        = isset( $job['scope'] ) ? (string) $job['scope'] : '';
+		if ( 'selected_sources' === $scope ) {
+			$keys = array_values( array_unique( array_intersect( $keys, $current_keys ) ) );
+		} else {
+			$keys = array_values( array_unique( array_merge( $keys, $current_keys ) ) );
+		}
 		$job['activeContractKeys'] = $keys;
 		$job['totalForms']         = count( $keys );
-		$has_woo_key = in_array( 'woocommerce:orders', $keys, true );
-		$ecommerce_source = isset( $settings['routing']['sourceIds']['ecommerce'] ) ? trim( (string) $settings['routing']['sourceIds']['ecommerce'] ) : '';
-		if ( $has_woo_key && '' === $ecommerce_source ) {
+		$has_woo_key              = in_array( 'woocommerce:orders', $keys, true );
+		$resolved_ecommerce_source = trim( (string) $this->resolve_backfill_source_for_channel( 'ecommerce', $settings ) );
+		if ( $has_woo_key && '' === $resolved_ecommerce_source ) {
 			$job['status']    = 'failed';
-			$job['lastError'] = 'Missing ecommerce project source id. Re-link project and confirm ecommerce source provisioning before Woo backfill.';
+			$job['lastError'] = 'Missing ecommerce routing for backfill. Re-link project and confirm ecommerce source provisioning.';
 			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
@@ -1800,7 +1805,12 @@ class Burrow {
 		}
 		$orders = wc_get_orders( $args );
 		if ( ! is_array( $orders ) || empty( $orders ) ) {
-			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
+			return array(
+				'events'     => array(),
+				'nextOffset' => $offset,
+				'done'       => true,
+				'warning'    => 'No WooCommerce orders found in the selected backfill window.',
+			);
 		}
 		try {
 			$routing_resolver = $this->build_channel_routing_resolver( $settings );
@@ -2203,7 +2213,12 @@ class Burrow {
 		if ( false === $start || false === $end ) {
 			return '';
 		}
-		return gmdate( 'Y-m-d H:i:s', $start ) . '...' . gmdate( 'Y-m-d H:i:s', $end );
+		// For all-time backfills, skip date filtering to avoid excluding orders due to parser differences.
+		if ( $start <= 0 ) {
+			return '';
+		}
+		// Woo date query is most reliable with date-only ranges.
+		return gmdate( 'Y-m-d', $start ) . '...' . gmdate( 'Y-m-d', $end );
 	}
 
 	/**
