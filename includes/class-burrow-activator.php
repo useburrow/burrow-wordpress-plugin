@@ -92,6 +92,10 @@ class Burrow_Activator {
 			wp_schedule_event( time() + 180, 'hourly', 'burrow_checkout_abandonment_scan' );
 		}
 
+		if ( ! wp_next_scheduled( 'burrow_cart_abandonment_scan' ) ) {
+			wp_schedule_event( time() + 240, 'hourly', 'burrow_cart_abandonment_scan' );
+		}
+
 		remove_filter( 'cron_schedules', array( __CLASS__, 'register_weekly_schedule' ) );
 	}
 

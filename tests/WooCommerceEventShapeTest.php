@@ -194,4 +194,116 @@ class WooCommerceEventShapeTest extends TestCase {
 		$this->assertSame( 21, strlen( $token ) );
 		$this->assertStringNotContainsString( '@', $token );
 	}
+
+	public function test_cart_abandoned_is_lifecycle_with_cart_entity() {
+		$envelope = CanonicalEnvelopeBuilders::buildEcommerceCartAbandonedEvent(
+			array(
+				'organizationId'           => 'org_1',
+				'cartTotal'                => 59.99,
+				'cartItemCount'            => 2,
+				'currency'                 => 'USD',
+				'minutesSinceLastActivity' => 145,
+				'externalEntityId'         => 'wc_session_abc123',
+				'timestamp'                => '2026-03-19T10:00:00+00:00',
+				'customerToken'            => 'wc_cust_7',
+				'tags'                     => array(
+					'provider'      => 'woocommerce',
+					'currency'      => 'USD',
+					'customerToken' => 'wc_cust_7',
+				),
+			),
+			$this->routing()
+		);
+		$this->assertSame( 'ecommerce', $envelope['channel'] );
+		$this->assertSame( 'ecommerce.cart.abandoned', $envelope['event'] );
+		$this->assertTrue( $envelope['isLifecycle'] );
+		$this->assertSame( 'cart', $envelope['entityType'] );
+		$this->assertSame( 'abandoned', $envelope['state'] );
+		$this->assertSame( 'wc_session_abc123', $envelope['externalEntityId'] );
+	}
+
+	public function test_cart_abandoned_has_required_properties() {
+		$envelope = CanonicalEnvelopeBuilders::buildEcommerceCartAbandonedEvent(
+			array(
+				'organizationId'           => 'org_1',
+				'cartTotal'                => 59.99,
+				'cartItemCount'            => 2,
+				'currency'                 => 'USD',
+				'minutesSinceLastActivity' => 145,
+				'externalEntityId'         => 'wc_session_abc123',
+				'timestamp'                => '2026-03-19T10:00:00+00:00',
+				'customerToken'            => 'wc_cust_7',
+				'tags'                     => array(
+					'provider'      => 'woocommerce',
+					'currency'      => 'USD',
+					'customerToken' => 'wc_cust_7',
+				),
+			),
+			$this->routing()
+		);
+		$props = $envelope['properties'];
+		$this->assertSame( 59.99, $props['cartTotal'] );
+		$this->assertSame( 2, $props['cartItemCount'] );
+		$this->assertSame( 'USD', $props['currency'] );
+		$this->assertSame( 145, $props['minutesSinceLastActivity'] );
+	}
+
+	public function test_payment_failed_is_not_lifecycle() {
+		$envelope = CanonicalEnvelopeBuilders::buildEcommercePaymentFailedEvent(
+			array(
+				'organizationId' => 'org_1',
+				'orderId'        => '99',
+				'cartTotal'      => 120.00,
+				'currency'       => 'USD',
+				'failureReason'  => 'card_declined',
+				'paymentMethod'  => 'stripe',
+				'timestamp'      => '2026-03-19T10:00:00+00:00',
+				'customerToken'  => 'wc_cust_7',
+				'tags'           => array(
+					'provider'      => 'woocommerce',
+					'currency'      => 'USD',
+					'customerToken' => 'wc_cust_7',
+					'paymentMethod' => 'stripe',
+				),
+			),
+			$this->routing()
+		);
+		$this->assertSame( 'ecommerce', $envelope['channel'] );
+		$this->assertSame( 'ecommerce.payment.failed', $envelope['event'] );
+		$this->assertFalse( $envelope['isLifecycle'] );
+	}
+
+	public function test_payment_failed_has_required_properties_and_tags() {
+		$envelope = CanonicalEnvelopeBuilders::buildEcommercePaymentFailedEvent(
+			array(
+				'organizationId' => 'org_1',
+				'orderId'        => '99',
+				'cartTotal'      => 120.00,
+				'currency'       => 'USD',
+				'failureReason'  => 'insufficient_funds',
+				'paymentMethod'  => 'stripe',
+				'timestamp'      => '2026-03-19T10:00:00+00:00',
+				'customerToken'  => 'wc_cust_7',
+				'tags'           => array(
+					'provider'      => 'woocommerce',
+					'currency'      => 'USD',
+					'customerToken' => 'wc_cust_7',
+					'paymentMethod' => 'stripe',
+				),
+			),
+			$this->routing()
+		);
+		$props = $envelope['properties'];
+		$this->assertSame( '99', $props['orderId'] );
+		$this->assertSame( 120.00, $props['cartTotal'] );
+		$this->assertSame( 'USD', $props['currency'] );
+		$this->assertSame( 'insufficient_funds', $props['failureReason'] );
+		$this->assertSame( 'stripe', $props['paymentMethod'] );
+
+		$tags = $envelope['tags'];
+		$this->assertSame( 'woocommerce', $tags['provider'] );
+		$this->assertSame( 'USD', $tags['currency'] );
+		$this->assertSame( 'wc_cust_7', $tags['customerToken'] );
+		$this->assertSame( 'stripe', $tags['paymentMethod'] );
+	}
 }

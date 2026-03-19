@@ -111,6 +111,7 @@ class Burrow {
 		$this->loader->add_action( 'woocommerce_add_to_cart', $this, 'handle_woocommerce_cart_item_added', 10, 6 );
 		$this->loader->add_action( 'woocommerce_cart_item_removed', $this, 'handle_woocommerce_cart_item_removed', 10, 2 );
 		$this->loader->add_action( 'woocommerce_checkout_init', $this, 'handle_woocommerce_checkout_started', 10, 1 );
+		$this->loader->add_action( 'woocommerce_order_status_failed', $this, 'handle_woocommerce_payment_failed', 10, 2 );
 	}
 
 	private function define_worker_hooks() {
@@ -122,6 +123,7 @@ class Burrow {
 		$this->loader->add_action( 'burrow_backfill_worker', $this, 'run_backfill_worker' );
 		$this->loader->add_action( 'burrow_invalidate_delivery', $this, 'invalidate_delivery_cache' );
 		$this->loader->add_action( 'burrow_checkout_abandonment_scan', $this, 'run_checkout_abandonment_scan' );
+		$this->loader->add_action( 'burrow_cart_abandonment_scan', $this, 'run_cart_abandonment_scan' );
 	}
 
 	/**
@@ -188,8 +190,12 @@ class Burrow {
 			if ( ! wp_next_scheduled( 'burrow_checkout_abandonment_scan' ) ) {
 				wp_schedule_event( time() + 180, 'hourly', 'burrow_checkout_abandonment_scan' );
 			}
+			if ( ! wp_next_scheduled( 'burrow_cart_abandonment_scan' ) ) {
+				wp_schedule_event( time() + 240, 'hourly', 'burrow_cart_abandonment_scan' );
+			}
 		} else {
 			wp_clear_scheduled_hook( 'burrow_checkout_abandonment_scan' );
+			wp_clear_scheduled_hook( 'burrow_cart_abandonment_scan' );
 		}
 	}
 
@@ -624,9 +630,14 @@ class Burrow {
 	 * @return array<string,mixed>|null
 	 */
 	private function maybe_build_cart_recovered_envelope( $order, array $data, $customer_token, array $settings, $routing_resolver ) {
-		$emitted = get_option( 'burrow_abandoned_sessions', array() );
-		if ( ! is_array( $emitted ) || empty( $emitted ) ) {
-			return null;
+		$checkout_abandoned = get_option( 'burrow_abandoned_sessions', array() );
+		if ( ! is_array( $checkout_abandoned ) ) {
+			$checkout_abandoned = array();
+		}
+
+		$cart_abandoned = get_option( 'burrow_cart_abandoned_sessions', array() );
+		if ( ! is_array( $cart_abandoned ) ) {
+			$cart_abandoned = array();
 		}
 
 		$customer_id = (int) $order->get_customer_id();
@@ -636,18 +647,29 @@ class Burrow {
 			return null;
 		}
 
-		if ( ! isset( $emitted[ $session_key ] ) ) {
+		$has_checkout = isset( $checkout_abandoned[ $session_key ] );
+		$has_cart     = isset( $cart_abandoned[ $session_key ] );
+
+		if ( ! $has_checkout && ! $has_cart ) {
 			return null;
 		}
 
-		$abandoned_at = strtotime( (string) $emitted[ $session_key ] );
-		$now          = time();
-		$minutes      = $abandoned_at ? (int) floor( ( $now - $abandoned_at ) / 60 ) : 0;
+		// Prefer checkout abandonment timestamp (more specific), fall back to cart.
+		$abandoned_at = $has_checkout
+			? strtotime( (string) $checkout_abandoned[ $session_key ] )
+			: strtotime( (string) $cart_abandoned[ $session_key ] );
+		$now     = time();
+		$minutes = $abandoned_at ? (int) floor( ( $now - $abandoned_at ) / 60 ) : 0;
 
 		$checkout_sessions = get_option( 'burrow_checkout_sessions', array() );
-		$original_cart_total = isset( $checkout_sessions[ $session_key ]['cartTotal'] )
-			? (float) $checkout_sessions[ $session_key ]['cartTotal']
-			: (float) $data['total'];
+		$cart_sessions     = get_option( 'burrow_cart_sessions', array() );
+
+		$original_cart_total = (float) $data['total'];
+		if ( isset( $checkout_sessions[ $session_key ]['cartTotal'] ) ) {
+			$original_cart_total = (float) $checkout_sessions[ $session_key ]['cartTotal'];
+		} elseif ( isset( $cart_sessions[ $session_key ]['cartTotal'] ) ) {
+			$original_cart_total = (float) $cart_sessions[ $session_key ]['cartTotal'];
+		}
 
 		$input = array(
 			'organizationId'          => (string) ( $settings['routing']['organizationId'] ?? '' ),
@@ -671,8 +693,14 @@ class Burrow {
 			return null;
 		}
 
-		unset( $emitted[ $session_key ] );
-		update_option( 'burrow_abandoned_sessions', $emitted, false );
+		if ( $has_checkout ) {
+			unset( $checkout_abandoned[ $session_key ] );
+			update_option( 'burrow_abandoned_sessions', $checkout_abandoned, false );
+		}
+		if ( $has_cart ) {
+			unset( $cart_abandoned[ $session_key ] );
+			update_option( 'burrow_cart_abandoned_sessions', $cart_abandoned, false );
+		}
 
 		return $envelope;
 	}
@@ -842,6 +870,11 @@ class Burrow {
 		} catch ( \Throwable $e ) {
 			error_log( '[Burrow funnel] ecommerce.cart.added build failed: ' . $e->getMessage() );
 			return;
+		}
+
+		$session = function_exists( 'WC' ) && WC()->session ? WC()->session : null;
+		if ( $session ) {
+			$this->record_cart_activity( $session->get_customer_id(), $cart_state, $identity );
 		}
 
 		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
@@ -1026,6 +1059,34 @@ class Burrow {
 	}
 
 	/**
+	 * Record cart activity for later cart-abandonment scanning.
+	 * Updated on every add-to-cart so the threshold is measured from last activity.
+	 *
+	 * @param string              $session_key Session key (WC customer ID).
+	 * @param array<string,mixed> $cart_state  Cart state snapshot.
+	 * @param array<string,mixed> $identity    Customer identity.
+	 */
+	private function record_cart_activity( $session_key, array $cart_state, array $identity ) {
+		$sessions = get_option( 'burrow_cart_sessions', array() );
+		if ( ! is_array( $sessions ) ) {
+			$sessions = array();
+		}
+		$sessions[ (string) $session_key ] = array(
+			'lastActivityAt' => gmdate( 'c' ),
+			'cartTotal'      => $cart_state['cartTotal'],
+			'cartItemCount'  => $cart_state['cartItemCount'],
+			'currency'       => $cart_state['currency'],
+			'customerToken'  => $identity['customerToken'],
+		);
+
+		$max_tracked = 500;
+		if ( count( $sessions ) > $max_tracked ) {
+			$sessions = array_slice( $sessions, -$max_tracked, null, true );
+		}
+		update_option( 'burrow_cart_sessions', $sessions, false );
+	}
+
+	/**
 	 * WP-Cron: scan for abandoned checkouts and emit ecommerce.checkout.abandoned events.
 	 * Always queued (inherently async).
 	 */
@@ -1153,6 +1214,291 @@ class Burrow {
 		) );
 
 		return ! empty( $orders );
+	}
+
+	/**
+	 * WP-Cron: scan for abandoned carts and emit ecommerce.cart.abandoned events.
+	 *
+	 * Scans sessions that had add_to_cart activity but never progressed to checkout_init.
+	 * Also cross-references WooCommerce persistent carts and the sessions table.
+	 * Uses lifecycle deduplication — Burrow's persistLifecycleState dedupes on
+	 * externalEntityId, so re-scans are safe.
+	 */
+	public function run_cart_abandonment_scan() {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$cart_sessions = get_option( 'burrow_cart_sessions', array() );
+		if ( ! is_array( $cart_sessions ) || empty( $cart_sessions ) ) {
+			return;
+		}
+
+		$checkout_sessions = get_option( 'burrow_checkout_sessions', array() );
+		if ( ! is_array( $checkout_sessions ) ) {
+			$checkout_sessions = array();
+		}
+
+		$cart_abandoned = get_option( 'burrow_cart_abandoned_sessions', array() );
+		if ( ! is_array( $cart_abandoned ) ) {
+			$cart_abandoned = array();
+		}
+
+		$threshold_minutes = (int) apply_filters( 'burrow_cart_abandonment_threshold_minutes', 120 );
+		$now               = time();
+		$envelopes         = array();
+		$newly_emitted     = array();
+		$surviving         = array();
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] ecommerce.cart.abandoned scan skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		foreach ( $cart_sessions as $session_key => $session_data ) {
+			if ( ! is_array( $session_data ) || empty( $session_data['lastActivityAt'] ) ) {
+				continue;
+			}
+
+			if ( isset( $cart_abandoned[ $session_key ] ) ) {
+				continue;
+			}
+
+			if ( isset( $checkout_sessions[ $session_key ] ) ) {
+				continue;
+			}
+
+			if ( $this->session_completed_order( $session_key ) ) {
+				continue;
+			}
+
+			$last_activity_ts = strtotime( (string) $session_data['lastActivityAt'] );
+			if ( false === $last_activity_ts ) {
+				continue;
+			}
+
+			$minutes_since = (int) floor( ( $now - $last_activity_ts ) / 60 );
+			if ( $minutes_since < $threshold_minutes ) {
+				$surviving[ $session_key ] = $session_data;
+				continue;
+			}
+
+			if ( ! $this->wc_session_has_cart( $session_key ) ) {
+				continue;
+			}
+
+			$external_entity_id = 'wc_session_' . $session_key;
+			$input = array(
+				'organizationId'           => (string) ( $settings['routing']['organizationId'] ?? '' ),
+				'cartTotal'                => (float) ( $session_data['cartTotal'] ?? 0 ),
+				'cartItemCount'            => (int) ( $session_data['cartItemCount'] ?? 0 ),
+				'currency'                 => (string) ( $session_data['currency'] ?? '' ),
+				'minutesSinceLastActivity' => $minutes_since,
+				'externalEntityId'         => $external_entity_id,
+				'timestamp'                => gmdate( 'c' ),
+				'customerToken'            => (string) ( $session_data['customerToken'] ?? '' ),
+				'tags'                     => array(
+					'provider'      => 'woocommerce',
+					'currency'      => (string) ( $session_data['currency'] ?? '' ),
+					'customerToken' => (string) ( $session_data['customerToken'] ?? '' ),
+				),
+			);
+
+			try {
+				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceCartAbandonedEvent( $input, $routing_resolver );
+				$newly_emitted[ $session_key ] = gmdate( 'c' );
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow funnel] ecommerce.cart.abandoned build failed for ' . $session_key . ': ' . $e->getMessage() );
+			}
+		}
+
+		if ( ! empty( $envelopes ) ) {
+			$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+				isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+			);
+			$this->sdk_enqueue_events( $envelopes, array(
+				'provider'  => 'woocommerce',
+				'projectId' => $sdk->projectId ?? '',
+			) );
+		}
+
+		if ( ! empty( $newly_emitted ) ) {
+			$cart_abandoned = array_merge( $cart_abandoned, $newly_emitted );
+			$max_ledger = 2000;
+			if ( count( $cart_abandoned ) > $max_ledger ) {
+				$cart_abandoned = array_slice( $cart_abandoned, -$max_ledger, null, true );
+			}
+			update_option( 'burrow_cart_abandoned_sessions', $cart_abandoned, false );
+		}
+
+		update_option( 'burrow_cart_sessions', $surviving, false );
+	}
+
+	/**
+	 * Verify a WC session still has a non-empty cart.
+	 * Checks persistent cart user meta for logged-in users, then the WC sessions table.
+	 *
+	 * @param string $session_key WC session customer ID.
+	 * @return bool
+	 */
+	private function wc_session_has_cart( $session_key ) {
+		if ( is_numeric( $session_key ) && (int) $session_key > 0 ) {
+			$blog_id   = get_current_blog_id();
+			$cart_meta = get_user_meta( (int) $session_key, '_woocommerce_persistent_cart_' . $blog_id, true );
+			if ( ! empty( $cart_meta ) && is_array( $cart_meta ) && ! empty( $cart_meta['cart'] ) ) {
+				return true;
+			}
+		}
+
+		global $wpdb;
+		$table         = $wpdb->prefix . 'woocommerce_sessions';
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$table_exists  = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		if ( $table !== $table_exists ) {
+			return false;
+		}
+
+		$session_value = $wpdb->get_var( $wpdb->prepare(
+			"SELECT session_value FROM {$table} WHERE session_key = %s AND session_expiry > %d LIMIT 1",
+			(string) $session_key,
+			time()
+		) );
+
+		if ( empty( $session_value ) ) {
+			return false;
+		}
+
+		$data = maybe_unserialize( $session_value );
+		if ( ! is_array( $data ) ) {
+			return false;
+		}
+
+		$cart = isset( $data['cart'] ) ? maybe_unserialize( $data['cart'] ) : array();
+		return ! empty( $cart );
+	}
+
+	/**
+	 * Handle ecommerce.payment.failed via woocommerce_order_status_failed hook.
+	 * Each failure is a discrete event (NOT lifecycle).
+	 *
+	 * @param int         $order_id Order ID.
+	 * @param object|null $order    WC_Order instance (passed by WC core).
+	 */
+	public function handle_woocommerce_payment_failed( $order_id, $order = null ) {
+		if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
+			if ( ! function_exists( 'wc_get_order' ) ) {
+				return;
+			}
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) {
+				return;
+			}
+		}
+
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_ecommerce_funnel_enabled( $settings ) ) {
+			return;
+		}
+
+		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
+		$data     = $provider->normalize_order( $order );
+		if ( empty( $data ) ) {
+			return;
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] ecommerce.payment.failed skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		$failure_reason = $this->extract_payment_failure_reason( $order );
+		$payment_method = (string) $data['paymentMethod'];
+		$customer_token = (string) $data['customerToken'];
+		$currency       = (string) $data['currency'];
+
+		$input = array(
+			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'        => (string) $data['orderId'],
+			'cartTotal'      => (float) $data['total'],
+			'currency'       => $currency,
+			'failureReason'  => $failure_reason,
+			'paymentMethod'  => $payment_method,
+			'timestamp'      => gmdate( 'c' ),
+			'customerToken'  => $customer_token,
+			'tags'           => array(
+				'provider'      => 'woocommerce',
+				'currency'      => $currency,
+				'customerToken' => $customer_token,
+				'paymentMethod' => $payment_method,
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommercePaymentFailedEvent( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow funnel] ecommerce.payment.failed build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( array( $envelope ), array(
+			'provider'  => 'woocommerce',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * Extract the payment failure reason from gateway-specific order meta or notes.
+	 *
+	 * @param object $order WC_Order instance.
+	 * @return string Normalized failure reason string.
+	 */
+	private function extract_payment_failure_reason( $order ) {
+		$gateway_meta_keys = array(
+			'_stripe_failure_code',
+			'_paypal_payment_error',
+			'_payment_failure_reason',
+			'_transaction_error_code',
+		);
+
+		if ( method_exists( $order, 'get_meta' ) ) {
+			foreach ( $gateway_meta_keys as $key ) {
+				$value = $order->get_meta( $key );
+				if ( ! empty( $value ) && is_string( $value ) ) {
+					return $value;
+				}
+			}
+		}
+
+		if ( function_exists( 'wc_get_order_notes' ) ) {
+			$notes = wc_get_order_notes( array(
+				'order_id' => $order->get_id(),
+				'limit'    => 5,
+				'orderby'  => 'date_created_gmt',
+			) );
+
+			$known_reasons = 'card_declined|insufficient_funds|expired_card|processing_error'
+				. '|authentication_required|do_not_honor|stolen_card|lost_card'
+				. '|pickup_card|invalid_account|invalid_amount|generic_decline';
+
+			if ( is_array( $notes ) ) {
+				foreach ( $notes as $note ) {
+					$content = isset( $note->content ) ? (string) $note->content : '';
+					if ( preg_match( '/\b(' . $known_reasons . ')\b/i', $content, $matches ) ) {
+						return strtolower( $matches[1] );
+					}
+				}
+			}
+		}
+
+		return 'payment_failed';
 	}
 
 	/**

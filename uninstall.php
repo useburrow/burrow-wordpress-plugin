@@ -29,6 +29,8 @@ delete_option( 'burrow_settings' );
 delete_option( 'burrow_version' );
 delete_option( 'burrow_checkout_sessions' );
 delete_option( 'burrow_abandoned_sessions' );
+delete_option( 'burrow_cart_sessions' );
+delete_option( 'burrow_cart_abandoned_sessions' );
 
 // Remove any scheduled events.
 wp_clear_scheduled_hook( 'burrow_outbox_worker' );
@@ -36,3 +38,4 @@ wp_clear_scheduled_hook( 'burrow_system_heartbeat' );
 wp_clear_scheduled_hook( 'burrow_system_stack_snapshot' );
 wp_clear_scheduled_hook( 'burrow_outbox_cleanup' );
 wp_clear_scheduled_hook( 'burrow_checkout_abandonment_scan' );
+wp_clear_scheduled_hook( 'burrow_cart_abandonment_scan' );

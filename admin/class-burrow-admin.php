@@ -1584,7 +1584,7 @@ class Burrow_Admin {
 			<fieldset style="margin:0 0 16px 0;">
 				<label style="display:block;">
 					<input type="checkbox" name="ecommerce_funnel" value="1" <?php checked( $funnel_enabled ); ?> />
-					<?php esc_html_e( 'Enable cart & checkout funnel tracking (add-to-cart, checkout started, abandoned checkout, cart recovery)', 'burrow' ); ?>
+					<?php esc_html_e( 'Enable cart & checkout funnel tracking (add-to-cart, checkout started, abandoned cart/checkout, cart recovery, payment failures)', 'burrow' ); ?>
 				</label>
 			</fieldset>
 			<?php submit_button( __( 'Save and Continue', 'burrow' ) ); ?>
