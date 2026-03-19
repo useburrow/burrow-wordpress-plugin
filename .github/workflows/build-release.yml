@@ -1,0 +1,99 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild (e.g. v1.0.0)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: burrow-wordpress-plugin
+
+      # The SDK is referenced as a Composer path repo at ../burrow-sdk/php.
+      # SDK_ACCESS_TOKEN must be a PAT (or fine-grained token) with read
+      # access to the useburrow/burrow-sdk repository.
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+        with:
+          repository: useburrow/burrow-sdk
+          path: burrow-sdk
+          token: ${{ secrets.SDK_ACCESS_TOKEN }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+
+      - name: Install dependencies
+        working-directory: burrow-wordpress-plugin
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Build release zip
+        id: build
+        working-directory: burrow-wordpress-plugin
+        run: |
+          PLUGIN_SLUG="burrow"
+          VERSION=$(sed -n 's/.*Version:[[:space:]]*\([0-9.]*\).*/\1/p' burrow.php | head -1)
+          BUILD_DIR="dist/${PLUGIN_SLUG}"
+          ZIP_FILE="dist/${PLUGIN_SLUG}-${VERSION}.zip"
+
+          echo "Building ${PLUGIN_SLUG} v${VERSION}..."
+          mkdir -p "${BUILD_DIR}"
+
+          for f in burrow.php readme.txt LICENSE uninstall.php; do
+            [ -f "$f" ] && cp "$f" "${BUILD_DIR}/"
+          done
+
+          for d in admin includes languages public src vendor; do
+            [ -d "$d" ] && cp -r "$d" "${BUILD_DIR}/"
+          done
+
+          # Strip dev/build artifacts
+          find "${BUILD_DIR}" \( -name ".DS_Store" -o -name ".gitignore" -o -name ".gitattributes" \) -delete 2>/dev/null || true
+          find "${BUILD_DIR}" -name "*.md" -not -name "README.md" -delete 2>/dev/null || true
+          rm -rf "${BUILD_DIR}/vendor/phpunit" "${BUILD_DIR}/vendor/bin" 2>/dev/null || true
+          find "${BUILD_DIR}/vendor" -mindepth 3 -maxdepth 3 -type d -name "vendor" -exec rm -rf {} + 2>/dev/null || true
+          find "${BUILD_DIR}/vendor" -type d \( -name "tests" -o -name "test" -o -name ".git" -o -name ".github" \) -exec rm -rf {} + 2>/dev/null || true
+          find "${BUILD_DIR}/vendor" \( -name "phpunit.xml" -o -name "phpunit.xml.dist" -o -name ".travis.yml" -o -name ".phpunit.result.cache" \) -delete 2>/dev/null || true
+
+          cd dist
+          zip -qr "../${ZIP_FILE}" "${PLUGIN_SLUG}"
+          cd ..
+          rm -rf "${BUILD_DIR}"
+
+          SIZE=$(du -h "${ZIP_FILE}" | cut -f1)
+          echo "Created ${ZIP_FILE} (${SIZE})"
+
+          echo "zip_path=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: burrow-wordpress-plugin/${{ steps.build.outputs.zip_path }}
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Burrow v${{ steps.build.outputs.version }}
+          generate_release_notes: true
