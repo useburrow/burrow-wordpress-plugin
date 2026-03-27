@@ -30,6 +30,7 @@ class WooCommerceEventShapeTest extends TestCase {
 			'timestamp'        => '2026-03-10T12:00:00+00:00',
 			'externalEntityId' => 'wc_order_42',
 			'customerToken'    => 'wc_cust_7',
+			'shippingMethod'   => 'flat-rate',
 			'tags'             => array(
 				'provider'        => 'woocommerce',
 				'currency'        => 'USD',
@@ -68,6 +69,8 @@ class WooCommerceEventShapeTest extends TestCase {
 		$this->assertSame( '42', $props['orderId'] );
 		$this->assertSame( 99.95, $props['orderTotal'] );
 		$this->assertSame( 79.95, $props['subtotal'] );
+		$this->assertSame( 10.0, $props['shippingTotal'] );
+		$this->assertSame( 'flat-rate', $props['shippingMethod'] );
 		$this->assertSame( 8.0, $props['tax'] );
 		$this->assertSame( 2, $props['itemCount'] );
 	}

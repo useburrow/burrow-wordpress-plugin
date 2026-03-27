@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -100,6 +100,12 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 
 == Changelog ==
 
+= 1.0.1 =
+* WooCommerce order backfill: only includes processing, completed, and on-hold orders (paid pipeline), not pending/cancelled drafts.
+* Backfill worker: marks the job complete only when every source cursor is finished; empty batches mid-job no longer close the job early.
+* Admin: queued backfill runs on WP-Cron only (avoids long synchronous admin requests on large stores).
+* Aligns with Burrow PHP SDK 0.9.6+ for funnel events and `ecommerce.order.placed` shipping fields on event properties when using bundled SDK builds.
+
 = 1.0.0 =
 * Initial release.
 * Guided onboarding wizard with project linking.
@@ -111,6 +117,9 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 * Provider-prefixed form IDs for cross-plugin uniqueness.
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+Improves backfill correctness and resilience; update the Composer-vendored PHP SDK to 0.9.6+ when building from source (`composer update`).
 
 = 1.0.0 =
 Initial release.

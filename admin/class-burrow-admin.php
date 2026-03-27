@@ -322,10 +322,7 @@ class Burrow_Admin {
 					$this->options_repo->save_settings( $settings );
 					do_action( 'burrow_invalidate_delivery' );
 					do_action( 'burrow_system_stack_snapshot' );
-					// Kick off worker immediately for local/dev visibility,
-					// while cron remains the durable fallback path.
 					wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
-					do_action( 'burrow_backfill_worker' );
 					$message = __( 'Backfill job queued.', 'burrow' );
 				}
 			} else {
@@ -344,7 +341,6 @@ class Burrow_Admin {
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
 			wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
-			do_action( 'burrow_backfill_worker' );
 			$message = __( 'Backfill resumed from current cursor.', 'burrow' );
 		} elseif ( 'retry_backfill' === $action ) {
 			$step = 'dashboard';
@@ -364,7 +360,6 @@ class Burrow_Admin {
 			$settings['backfill']   = $job;
 			$this->options_repo->save_settings( $settings );
 			wp_schedule_single_event( time() + 5, 'burrow_backfill_worker' );
-			do_action( 'burrow_backfill_worker' );
 			$message = __( 'Backfill restarted from beginning.', 'burrow' );
 		} elseif ( 'save_operations_contract' === $action ) {
 			$step            = 'dashboard';

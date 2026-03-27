@@ -47,7 +47,7 @@ class Burrow {
 	private $contract_mapper;
 
 	public function __construct() {
-		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.0.0';
+		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.0.1';
 		$this->plugin_name     = 'burrow';
 		$this->options_repo    = new BurrowWP\Infrastructure\Persistence\WpOptionsRepository();
 		$this->outbox_repo     = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
@@ -1545,6 +1545,9 @@ class Burrow {
 			'customerToken'    => (string) $data['customerToken'],
 			'tags'             => $tags,
 		);
+		if ( ! empty( $data['shippingMethod'] ) ) {
+			$input['shippingMethod'] = (string) $data['shippingMethod'];
+		}
 
 		return $input;
 	}
@@ -1854,10 +1857,12 @@ class Burrow {
 		$job['completedForms'] = $this->count_done_forms( $keys, $cursor );
 
 		if ( empty( $events ) ) {
-			$job['status']      = 'completed';
-			$job['completedAt'] = gmdate( 'c' );
-			$job['updatedAt']   = gmdate( 'c' );
-			$job['lastError']   = '';
+			if ( $this->backfill_all_contract_keys_done( $keys, $cursor ) ) {
+				$job['status']      = 'completed';
+				$job['completedAt'] = gmdate( 'c' );
+				$job['lastError']   = '';
+			}
+			$job['updatedAt'] = gmdate( 'c' );
 			$settings['backfill'] = $job;
 			$this->options_repo->save_settings( $settings );
 			return;
@@ -2145,6 +2150,7 @@ class Burrow {
 			'orderby' => 'date',
 			'order'   => 'ASC',
 			'return'  => 'objects',
+			'status'  => $this->woocommerce_backfill_order_statuses(),
 		);
 		if ( '' !== (string) $window_start ) {
 			$args['date_created'] = $this->woocommerce_date_query( $window_start, $window_end );
@@ -2219,6 +2225,35 @@ class Burrow {
 			}
 		}
 		return $count;
+	}
+
+	/**
+	 * WooCommerce order statuses included in historical backfill (paid / fulfillment pipeline only).
+	 *
+	 * @return string[]
+	 */
+	private function woocommerce_backfill_order_statuses() {
+		return array( 'wc-processing', 'wc-completed', 'wc-on-hold' );
+	}
+
+	/**
+	 * Whether every active backfill cursor has reached the end of its source.
+	 *
+	 * @param string[]            $keys   Active contract keys.
+	 * @param array<string,array> $cursor Per-key cursor state.
+	 * @return bool
+	 */
+	private function backfill_all_contract_keys_done( array $keys, array $cursor ): bool {
+		if ( empty( $keys ) ) {
+			return true;
+		}
+		foreach ( $keys as $key ) {
+			$state = isset( $cursor[ $key ] ) && is_array( $cursor[ $key ] ) ? $cursor[ $key ] : array();
+			if ( empty( $state['done'] ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
