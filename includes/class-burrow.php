@@ -104,7 +104,6 @@ class Burrow {
 		$this->loader->add_action( 'frm_after_create_entry', $this, 'handle_formidable_submission', 10, 2 );
 
 		// WooCommerce hooks.
-		$this->loader->add_action( 'woocommerce_checkout_order_processed', $this, 'handle_woocommerce_order', 10, 1 );
 		$this->loader->add_action( 'woocommerce_payment_complete', $this, 'handle_woocommerce_order', 10, 1 );
 		$this->loader->add_action( 'woocommerce_order_status_changed', $this, 'handle_woocommerce_status_change', 10, 3 );
 
@@ -569,6 +568,10 @@ class Burrow {
 			return;
 		}
 
+		if ( ! $this->is_revenue_countable_order_status( $order->get_status() ) ) {
+			return;
+		}
+
 		$provider = new BurrowWP\Providers\Ecommerce\WooCommerceProvider();
 		$data     = $provider->normalize_order( $order );
 		if ( empty( $data ) ) {
@@ -796,6 +799,16 @@ class Burrow {
 			: array();
 		$mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
 		return in_array( 'woocommerce', $selected, true ) && 'track' === $mode;
+	}
+
+	/**
+	 * Order statuses that count toward gross revenue and order.placed emission.
+	 *
+	 * @param string $status WooCommerce order status (without wc- prefix).
+	 * @return bool
+	 */
+	private function is_revenue_countable_order_status( $status ) {
+		return in_array( sanitize_key( (string) $status ), array( 'processing', 'completed' ), true );
 	}
 
 	/**
@@ -1528,6 +1541,7 @@ class Burrow {
 			'paymentMethod'   => (string) $data['paymentMethod'],
 			'shippingCountry' => (string) $data['shippingCountry'],
 			'shippingRegion'  => (string) $data['shippingRegion'],
+			'orderStatus'     => (string) ( $data['status'] ?? '' ),
 		);
 		if ( ! empty( $data['shippingMethod'] ) ) {
 			$tags['shippingMethod'] = (string) $data['shippingMethod'];
@@ -2241,7 +2255,7 @@ class Burrow {
 	 * @return string[]
 	 */
 	private function woocommerce_backfill_order_statuses() {
-		return array( 'wc-processing', 'wc-completed', 'wc-on-hold' );
+		return array( 'wc-processing', 'wc-completed' );
 	}
 
 	/**
