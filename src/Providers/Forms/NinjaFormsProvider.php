@@ -13,22 +13,44 @@ class NinjaFormsProvider implements FormsProviderInterface {
 	}
 
 	public function normalize_submission( $payload ) {
-		$form_data = isset( $payload['form_data'] ) && is_array( $payload['form_data'] ) ? $payload['form_data'] : array();
-		$fields    = isset( $payload['fields'] ) && is_array( $payload['fields'] ) ? $payload['fields'] : array();
-		$values    = array();
+		$payload = is_array( $payload ) ? $payload : array();
+		$fields  = isset( $payload['fields'] ) && is_array( $payload['fields'] ) ? $payload['fields'] : array();
+		$values  = array();
 
 		foreach ( $fields as $field ) {
-			if ( ! isset( $field['id'] ) ) {
+			if ( ! is_array( $field ) || ! isset( $field['id'] ) ) {
 				continue;
 			}
 			$values[ (string) $field['id'] ] = $field['value'] ?? '';
 		}
 
+		$form_id = '';
+		if ( isset( $payload['form_id'] ) ) {
+			$form_id = (string) $payload['form_id'];
+		} elseif ( isset( $payload['form_data']['id'] ) ) {
+			$form_id = (string) $payload['form_data']['id'];
+		}
+
+		$form_name = 'Ninja Form';
+		if ( isset( $payload['settings']['title'] ) && '' !== (string) $payload['settings']['title'] ) {
+			$form_name = (string) $payload['settings']['title'];
+		} elseif ( isset( $payload['form_data']['form_title'] ) && '' !== (string) $payload['form_data']['form_title'] ) {
+			$form_name = (string) $payload['form_data']['form_title'];
+		}
+
+		$submission_id = '';
+		if ( isset( $payload['actions']['save']['sub_id'] ) ) {
+			$submission_id = (string) $payload['actions']['save']['sub_id'];
+		}
+		if ( '' === $submission_id ) {
+			$submission_id = uniqid( 'nf_', false );
+		}
+
 		return array(
 			'provider'      => $this->get_provider_key(),
-			'formId'        => (string) ( $form_data['id'] ?? '' ),
-			'formName'      => (string) ( $form_data['form_title'] ?? 'Ninja Form' ),
-			'submissionId'  => (string) ( $payload['actions']['save']['sub_id'] ?? uniqid( 'nf_', false ) ),
+			'formId'        => $form_id,
+			'formName'      => $form_name,
+			'submissionId'  => $submission_id,
 			'rawValues'     => $values,
 		);
 	}

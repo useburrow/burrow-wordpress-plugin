@@ -98,6 +98,7 @@ class Burrow {
 		$this->loader->add_action( 'gform_after_submission', $this, 'handle_gravity_submission', 10, 2 );
 		$this->loader->add_action( 'ninja_forms_after_submission', $this, 'handle_ninja_submission', 10, 1 );
 		$this->loader->add_action( 'wpcf7_mail_sent', $this, 'handle_cf7_submission', 10, 1 );
+		$this->loader->add_action( 'fluentform/submission_inserted', $this, 'handle_fluent_submission', 10, 3 );
 		$this->loader->add_action( 'fluentform_submission_inserted', $this, 'handle_fluent_submission', 10, 3 );
 		$this->loader->add_action( 'wpforms_process_complete', $this, 'handle_wpforms_submission', 10, 4 );
 		$this->loader->add_action( 'frm_after_create_entry', $this, 'handle_formidable_submission', 10, 2 );
@@ -479,17 +480,24 @@ class Burrow {
 	/**
 	 * Handle Fluent Forms submission.
 	 *
-	 * @param int                 $entry_id Entry id.
-	 * @param array<string,mixed> $form_data Form data.
-	 * @param array<string,mixed> $entry_data Entry data.
+	 * @param int                 $entry_id  Entry id.
+	 * @param array<string,mixed> $form_data Submitted field values.
+	 * @param object|array        $form      Form object or array.
 	 * @return void
 	 */
-	public function handle_fluent_submission( $entry_id, $form_data, $entry_data ) {
-		$provider = new BurrowWP\Providers\Forms\FluentFormsProvider();
-		$payload  = array(
+	public function handle_fluent_submission( $entry_id, $form_data, $form ) {
+		$provider    = new BurrowWP\Providers\Forms\FluentFormsProvider();
+		$form_array  = array();
+		if ( is_object( $form ) ) {
+			$form_array['id']    = isset( $form->id ) ? (string) $form->id : '';
+			$form_array['title'] = isset( $form->title ) ? (string) $form->title : 'Fluent Form';
+		} elseif ( is_array( $form ) ) {
+			$form_array = $form;
+		}
+		$payload = array(
 			'entry' => array( 'id' => $entry_id ),
-			'form'  => is_array( $form_data ) ? $form_data : array(),
-			'data'  => is_array( $entry_data ) ? $entry_data : array(),
+			'form'  => $form_array,
+			'data'  => is_array( $form_data ) ? $form_data : array(),
 		);
 		$this->enqueue_forms_event( $provider->normalize_submission( $payload ) );
 	}
