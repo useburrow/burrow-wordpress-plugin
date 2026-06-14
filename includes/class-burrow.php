@@ -1710,14 +1710,24 @@ class Burrow {
 	 * @return void
 	 */
 	public function emit_system_heartbeat() {
-		$settings = $this->options_repo->get_settings();
+		$settings  = $this->options_repo->get_settings();
+		$collector = new BurrowWP\Core\System\SystemMetricsCollector();
+		$snapshot  = $collector->collect_stack_snapshot();
 		try {
 			$routing  = $this->build_channel_routing_resolver( $settings );
 			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildSystemHeartbeatEvent(
 				array(
 					'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
 					'responseMs'     => 0,
-					'tags'           => array( 'provider' => 'snapshot' ),
+					'tags'           => array(
+						'provider'       => 'snapshot',
+						'cmsVersion'     => (string) get_bloginfo( 'version' ),
+						'phpVersion'     => (string) phpversion(),
+						'siteUrl'        => (string) site_url(),
+						'pluginVersion'  => (string) BURROW_VERSION,
+						'totalPlugins'   => (string) (int) ( $snapshot['totalPlugins'] ?? 0 ),
+						'updatesAvailable' => ! empty( $snapshot['updatesAvailable'] ) ? 'true' : 'false',
+					),
 				),
 				$routing
 			);
