@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -100,6 +100,12 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 
 == Changelog ==
 
+= 1.0.2 =
+* Forms: fix Fluent Forms and Ninja Forms submission ingestion (correct hook, payload normalization, and form_id resolution).
+* WooCommerce: emit `order.placed` only for revenue-countable statuses (processing, completed); include `orderStatus` on payloads and align backfill to the same filter.
+* System: enrich heartbeat pings with CMS, PHP, plugin version, and plugin inventory summary tags.
+* Admin: validate API keys during setup, preserve Gravity Forms wizard state, route Reconfigure into the wizard, improve custom-field mapping UI, and guard backfill queue actions with clearer progress labels.
+
 = 1.0.1 =
 * WooCommerce order backfill: only includes processing, completed, and on-hold orders (paid pipeline), not pending/cancelled drafts.
 * Backfill worker: marks the job complete only when every source cursor is finished; empty batches mid-job no longer close the job early.
@@ -117,6 +123,9 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 * Provider-prefixed form IDs for cross-plugin uniqueness.
 
 == Upgrade Notice ==
+
+= 1.0.2 =
+Fixes Fluent/Ninja Forms ingestion, tightens WooCommerce order.placed gating, and improves onboarding and backfill admin UX.
 
 = 1.0.1 =
 Improves backfill correctness and resilience; update the Composer-vendored PHP SDK to 0.9.6+ when building from source (`composer update`).
