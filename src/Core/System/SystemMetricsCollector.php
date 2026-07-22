@@ -36,20 +36,82 @@ class SystemMetricsCollector {
 			);
 		}
 
+		$cms = $this->collect_cms_update_metadata();
+		if ( ! empty( $cms['updateAvailable'] ) ) {
+			$up_count++;
+		}
+
 		return array(
-			'cms' => array(
-				'name'            => 'wordpress',
-				'version'         => get_bloginfo( 'version' ),
-				'latestVersion'   => get_bloginfo( 'version' ),
-				'updateAvailable' => false,
-			),
-			'runtime' => array(
+			'cms'               => $cms,
+			'runtime'           => array(
 				'php'      => phpversion(),
 				'database' => $this->database_version(),
 			),
-			'plugins'          => $items,
-			'updatesAvailable' => $up_count,
-			'totalPlugins'     => count( $items ),
+			'plugins'           => $items,
+			'updatesAvailable'  => $up_count,
+			'totalPlugins'      => count( $items ),
+		);
+	}
+
+	/**
+	 * WordPress core version + update availability.
+	 *
+	 * @return array{name:string,version:string,latestVersion:string,updateAvailable:bool}
+	 */
+	private function collect_cms_update_metadata() {
+		$current = (string) get_bloginfo( 'version' );
+		$latest  = $current;
+		$available = false;
+
+		if ( function_exists( 'wp_version_check' ) ) {
+			wp_version_check();
+		}
+
+		$core_updates = function_exists( 'get_core_updates' ) ? get_core_updates( array( 'dismissed' => false ) ) : false;
+		if ( is_array( $core_updates ) ) {
+			foreach ( $core_updates as $update ) {
+				if ( ! is_object( $update ) ) {
+					continue;
+				}
+				$response = isset( $update->response ) ? (string) $update->response : '';
+				$version  = isset( $update->current ) ? (string) $update->current : ( isset( $update->version ) ? (string) $update->version : '' );
+				if ( '' === $version ) {
+					continue;
+				}
+				if ( in_array( $response, array( 'upgrade', 'latest' ), true ) || version_compare( $version, $current, '>' ) ) {
+					if ( version_compare( $version, $latest, '>' ) ) {
+						$latest = $version;
+					}
+				}
+				if ( 'upgrade' === $response || version_compare( $version, $current, '>' ) ) {
+					$available = true;
+				}
+			}
+		}
+
+		if ( ! $available ) {
+			$transient = get_site_transient( 'update_core' );
+			if ( is_object( $transient ) && ! empty( $transient->updates ) && is_array( $transient->updates ) ) {
+				foreach ( $transient->updates as $update ) {
+					if ( ! is_object( $update ) ) {
+						continue;
+					}
+					$response = isset( $update->response ) ? (string) $update->response : '';
+					$version  = isset( $update->current ) ? (string) $update->current : '';
+					if ( 'upgrade' === $response && '' !== $version && version_compare( $version, $current, '>' ) ) {
+						$available = true;
+						$latest    = $version;
+						break;
+					}
+				}
+			}
+		}
+
+		return array(
+			'name'            => 'wordpress',
+			'version'         => $current,
+			'latestVersion'   => $latest,
+			'updateAvailable' => $available,
 		);
 	}
 

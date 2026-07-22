@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.0.2
+Stable tag: 1.1.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -57,12 +57,12 @@ All data is transmitted over HTTPS to Burrow's API endpoints. An API key (config
 
 1. Upload the `burrow` folder to the `/wp-content/plugins/` directory, or install the plugin through the WordPress plugins screen directly.
 2. Activate the plugin through the **Plugins** screen in WordPress. You will be redirected to the onboarding wizard automatically.
-3. Enter your Burrow API base URL and API key. You can find your API key at [app.useburrow.com/settings](https://app.useburrow.com/settings).
+3. Enter your Burrow API base URL (defaults to `https://app.useburrow.com`) and API key. You can find your API key at [app.useburrow.com/settings](https://app.useburrow.com/settings).
 4. Select the Burrow project to connect to.
 5. Choose which integrations to enable (form plugins and/or WooCommerce). The wizard auto-detects installed plugins.
-6. Configure form tracking contracts — choose count-only or custom field mappings for each form.
+6. Add forms from the selective picker (sorted by 120-day volume) and choose count-only or custom field mappings.
 7. Review and sync your contracts to Burrow.
-8. Optionally backfill historical data from a predefined time window.
+8. Optionally backfill historical data (defaults to two years). After setup, use **Burrow → Settings** for ongoing configuration.
 
 == Frequently Asked Questions ==
 
@@ -80,7 +80,7 @@ Yes. Burrow tracks WooCommerce order lifecycle events including order placement,
 
 = Can I backfill historical data? =
 
-Yes. After completing the onboarding wizard, you can backfill past form submissions and WooCommerce orders from predefined time windows (30 days, 90 days, 6 months, 1 year, or 2 years). Contact Form 7 backfill requires the Flamingo plugin for stored submissions.
+Yes. After completing the onboarding wizard, you can backfill past form submissions and WooCommerce orders from predefined time windows (7/30/90 days, 1 year, 2 years, or all time). The default window is two years. Contact Form 7 backfill requires the Flamingo plugin for stored submissions.
 
 = What data is sent to Burrow? =
 
@@ -99,6 +99,15 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 5. Outbox — monitor queued, sent, and failed events with payload inspection.
 
 == Changelog ==
+
+= 1.1.0 =
+* Connect: default Burrow base URL is now `https://app.useburrow.com`; support `BURROW_BASE_URL` env override.
+* SDK: bump bundled `useburrow/sdk-php` to 0.9.9 (reserved canonical key / `feed_` prefix handling).
+* Forms: complete WPForms and Formidable Forms wizard steps; selective form picker with 120-day volume sorting and gated save (Craft UX parity).
+* Backfill: default historical window is Two years.
+* Outbox: bulk retry all failed events from Dashboard and Outbox.
+* System: report WordPress core `updateAvailable` / `latestVersion` in stack snapshots.
+* Admin: post-onboarding **Settings** page (Overview, Integrations, providers, Connection) with automatic contract sync on save.
 
 = 1.0.2 =
 * Forms: fix Fluent Forms and Ninja Forms submission ingestion (correct hook, payload normalization, and form_id resolution).
@@ -123,6 +132,9 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 * Provider-prefixed form IDs for cross-plugin uniqueness.
 
 == Upgrade Notice ==
+
+= 1.1.0 =
+Craft feature parity: app.useburrow.com default, selective form picker, Settings auto-sync, bulk outbox retry, and SDK 0.9.9.
 
 = 1.0.2 =
 Fixes Fluent/Ninja Forms ingestion, tightens WooCommerce order.placed gating, and improves onboarding and backfill admin UX.

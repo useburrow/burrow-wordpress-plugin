@@ -220,6 +220,33 @@ class WpOutboxRepository implements OutboxStoreInterface {
 	}
 
 	/**
+	 * Reset all failed outbox rows for retry (Craft parity bulk action).
+	 *
+	 * @return int Number of rows updated.
+	 */
+	public function replay_all_failed() {
+		global $wpdb;
+		$now = current_time( 'mysql', true );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$sql = $wpdb->prepare(
+			"UPDATE {$this->table_name}
+			SET status = %s,
+				attempt_count = 0,
+				last_error = NULL,
+				next_attempt_at = %s,
+				updated_at = %s
+			WHERE status = %s",
+			OutboxStatus::PENDING,
+			$now,
+			$now,
+			OutboxStatus::FAILED
+		);
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$result = $wpdb->query( $sql );
+		return false === $result ? 0 : (int) $result;
+	}
+
+	/**
 	 * Force a pending or retrying record to be eligible for the next flush.
 	 *
 	 * @param int $id Record ID.
