@@ -47,7 +47,7 @@ class Burrow {
 	private $contract_mapper;
 
 	public function __construct() {
-		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.0.1';
+		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.1.0';
 		$this->plugin_name     = 'burrow';
 		$this->options_repo    = new BurrowWP\Infrastructure\Persistence\WpOptionsRepository();
 		$this->outbox_repo     = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
@@ -211,11 +211,12 @@ class Burrow {
 		$settings      = $this->options_repo->get_settings();
 		$ingestion_key = isset( $settings['ingestion_key'] ) && is_array( $settings['ingestion_key'] ) ? $settings['ingestion_key'] : array();
 		$auth_key      = BurrowWP\Core\Auth\DispatchCredentials::resolve_dispatch_api_key( '', $ingestion_key );
-		if ( '' === $auth_key || empty( $settings['base_url'] ) ) {
+		$base_url      = BurrowWP\Core\Config\BaseUrlResolver::resolve( $settings );
+		if ( '' === $auth_key || '' === $base_url ) {
 			return null;
 		}
 		$api_client = new BurrowWP\Infrastructure\Http\BurrowApiClient(
-			$settings['base_url'],
+			$base_url,
 			$auth_key,
 			5,
 			$ingestion_key,

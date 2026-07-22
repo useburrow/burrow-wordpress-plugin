@@ -22,14 +22,14 @@ jobs:
         with:
           path: burrow-wordpress-plugin
 
-      # The SDK is referenced as a Composer path repo at ../burrow-sdk/php.
-      # SDK_ACCESS_TOKEN must be a PAT (or fine-grained token) with read
-      # access to the useburrow/burrow-sdk repository.
+      # Composer path repo expects ../burrow-sdk/php. Checkout the published
+      # PHP SDK package into that path so builds pin to ^0.9.9+.
       - name: Checkout SDK
         uses: actions/checkout@v4
         with:
-          repository: useburrow/burrow-sdk
-          path: burrow-sdk
+          repository: useburrow/sdk-php
+          path: burrow-sdk/php
+          ref: v0.9.9
           token: ${{ secrets.SDK_ACCESS_TOKEN }}
 
       - name: Setup PHP

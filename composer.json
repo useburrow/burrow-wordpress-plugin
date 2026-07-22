@@ -12,7 +12,7 @@
     }
   ],
   "require": {
-    "useburrow/sdk-php": "^0.9.6"
+    "useburrow/sdk-php": "^0.9.9"
   },
   "require-dev": {
     "phpunit/phpunit": "^9.6"

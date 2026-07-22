@@ -11,6 +11,7 @@
 namespace BurrowWP\Infrastructure\Persistence;
 
 use BurrowWP\Core\Auth\SecretStore;
+use BurrowWP\Core\Config\BaseUrlResolver;
 
 class WpOptionsRepository {
 	/**
@@ -32,7 +33,7 @@ class WpOptionsRepository {
 		$settings = wp_parse_args(
 			$settings,
 			array(
-				'base_url'            => 'https://api.useburrow.com',
+				'base_url'            => BaseUrlResolver::DEFAULT_BASE_URL,
 				'ingestion_key'       => array(
 					'key'       => '',
 					'projectId' => '',
