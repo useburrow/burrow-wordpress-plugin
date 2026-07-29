@@ -1742,6 +1742,40 @@ class Burrow_Admin {
 		);
 	}
 
+	private function render_woocommerce_step() {
+		$settings = $this->options_repo->get_settings();
+		$mode     = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+		if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
+			$mode = 'track';
+		}
+		$caps           = isset( $settings['capabilities'] ) && is_array( $settings['capabilities'] ) ? $settings['capabilities'] : array();
+		$funnel_enabled = ! empty( $caps['ecommerce_funnel'] );
+		?>
+		<p><?php esc_html_e( 'Choose how WooCommerce should be handled for this project.', 'burrow' ); ?></p>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="confirm_woocommerce" />
+			<fieldset style="margin:12px 0 16px 0;">
+				<label style="display:block;margin-bottom:8px;">
+					<input type="radio" name="woocommerce_mode" value="track" <?php checked( 'track', $mode ); ?> />
+					<?php esc_html_e( 'Track WooCommerce events', 'burrow' ); ?>
+				</label>
+				<label style="display:block;">
+					<input type="radio" name="woocommerce_mode" value="off" <?php checked( 'off', $mode ); ?> />
+					<?php esc_html_e( 'Do not track WooCommerce events', 'burrow' ); ?>
+				</label>
+			</fieldset>
+			<fieldset style="margin:0 0 16px 0;">
+				<label style="display:block;">
+					<input type="checkbox" name="ecommerce_funnel" value="1" <?php checked( $funnel_enabled ); ?> />
+					<?php esc_html_e( 'Enable cart & checkout funnel tracking (add-to-cart, checkout started, abandoned cart/checkout, cart recovery, payment failures)', 'burrow' ); ?>
+				</label>
+			</fieldset>
+			<?php submit_button( __( 'Save and Continue', 'burrow' ) ); ?>
+		</form>
+		<?php
+	}
+
 	private function render_simple_forms_provider_step( $provider, array $forms ) {
 		$provider = sanitize_key( (string) $provider );
 		$labels   = $this->integration_labels();

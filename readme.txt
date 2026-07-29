@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -100,6 +100,9 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 
 == Changelog ==
 
+= 1.1.1 =
+* Admin: fix fatal error `Call to undefined method Burrow_Admin::render_woocommerce_step()` — restore the WooCommerce setup step renderer removed in the 1.1.0 refactor while its wizard and Settings call sites remained.
+
 = 1.1.0 =
 * Connect: default Burrow base URL is now `https://app.useburrow.com`; support `BURROW_BASE_URL` env override.
 * SDK: bump bundled `useburrow/sdk-php` to 0.9.9 (reserved canonical key / `feed_` prefix handling).
@@ -132,6 +135,9 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 * Provider-prefixed form IDs for cross-plugin uniqueness.
 
 == Upgrade Notice ==
+
+= 1.1.1 =
+Fixes a fatal error on the WooCommerce setup step and Settings WooCommerce section introduced in 1.1.0. Upgrade immediately if you are on 1.1.0.
 
 = 1.1.0 =
 Craft feature parity: app.useburrow.com default, selective form picker, Settings auto-sync, bulk outbox retry, and SDK 0.9.9.

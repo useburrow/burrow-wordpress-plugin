@@ -11,7 +11,7 @@
  * Plugin Name:       Burrow
  * Plugin URI:        https://useburrow.com
  * Description:       Connects your WordPress site to Burrow with minimal setup. Auto-detects forms and commerce activity, and sends contract-based events (system, forms, ecommerce) via a resilient queued sync so reporting stays accurate even during downtime.
- * Version:           1.1.0
+ * Version:           1.1.1
  * Requires at least: 5.6
  * Requires PHP:      7.4
  * Author:            Burrow
@@ -30,7 +30,7 @@ if ( ! defined( 'WPINC' ) ) {
 /**
  * Current plugin version.
  */
-define( 'BURROW_VERSION', '1.1.0' );
+define( 'BURROW_VERSION', '1.1.1' );
 define( 'BURROW_PLUGIN_FILE', __FILE__ );
 
 /**

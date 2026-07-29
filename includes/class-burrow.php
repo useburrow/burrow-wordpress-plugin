@@ -47,7 +47,7 @@ class Burrow {
 	private $contract_mapper;
 
 	public function __construct() {
-		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.1.0';
+		$this->version         = defined( 'BURROW_VERSION' ) ? BURROW_VERSION : '1.1.1';
 		$this->plugin_name     = 'burrow';
 		$this->options_repo    = new BurrowWP\Infrastructure\Persistence\WpOptionsRepository();
 		$this->outbox_repo     = new BurrowWP\Infrastructure\Persistence\WpOutboxRepository();
