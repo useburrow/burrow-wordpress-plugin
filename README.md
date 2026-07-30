@@ -1,154 +1,68 @@
-# Burrow WordPress Plugin
+# Burrow for WordPress
 
-Production-oriented WordPress plugin integration for Burrow onboarding, contract-based form ingestion, ecommerce event emission, system health events, and durable outbox delivery.
+Know what your website is actually doing. Burrow connects your WordPress site to [Burrow](https://useburrow.com) and turns form submissions, store orders, and site health into clean, real-time reporting — without you touching a line of code.
 
-## Features
+## Why Burrow?
 
-- Onboarding actions:
-  - `POST /api/v1/plugin-onboarding/discover`
-  - `POST /api/v1/plugin-onboarding/link`
-  - `POST /api/v1/plugin-onboarding/forms/contracts`
-- Runtime ingestion:
-  - `POST /api/v1/events` with `x-api-key` header
-  - Success statuses accepted by worker: `200` and `207`
-- Forms providers:
-  - Gravity Forms, Contact Form 7, Ninja Forms, Fluent Forms, WPForms, Formidable Forms
-  - Selective form picker sorted by 120-day submission volume (Craft UX parity)
-- Ecommerce provider:
-  - WooCommerce (`order.placed`, `item.purchased`, lifecycle + optional funnel)
-- System events:
-  - `system.heartbeat.ping` (hourly)
-  - `system.stack.snapshot` (weekly), including WordPress core update availability
-- Durable local outbox:
-  - enqueue-first delivery (never block user submission flow)
-  - retry on retryable failures with exponential backoff
-  - bulk retry for failed rows
-  - terminal fail after max attempts
+- **See every lead the moment it arrives.** Form submissions from the plugins you already use flow straight into Burrow, so you always know which forms are working and which are collecting dust.
+- **Understand your revenue.** Orders, line items, refunds, and cancellations are tracked automatically, giving you sales reporting and product-level insight across your store.
+- **Set it up in minutes.** A guided wizard detects the plugins on your site, walks you through connecting to Burrow, and lets you pick exactly what to track.
+- **Never lose an event.** If Burrow is temporarily unreachable, events queue safely on your site and deliver automatically once the connection returns.
+- **Start with history, not a blank slate.** Backfill up to two years (or all time) of past form submissions and orders so your reporting is useful on day one.
+- **Privacy by design.** You choose which form fields are shared — everything else stays on your site. Order events never include customer names, emails, or addresses, only an opaque customer token.
 
-## Configuration Model
+## Supported form plugins
 
-Settings are persisted in `burrow_settings` and include:
+Burrow auto-detects whichever of these are active on your site:
 
-- API config: `base_url` (default `https://app.useburrow.com`; override with `BURROW_BASE_URL`)
-- Ingestion key state (after link): `ingestion_key.key`, `ingestion_key.projectId`, `ingestion_key.keyPrefix`
-- Burrow project deep-link metadata: `burrow_project.path`, `burrow_project.url`
-- Routing config:
-  - `organizationId`
-  - `clientId`
-  - `projectId`
-  - `projectSourceId`
-  - `sourceIds.forms|ecommerce|system`
-- Forms contract metadata:
-  - selected forms and mapping definitions
-  - `fieldMappings` (`canonicalKey`, `target`, etc.)
-  - optional per-contract `icon` override (Lucide icon key)
-- Contract sync metadata:
-  - `version`, `hash`, `syncedAt`
-- Reliability config:
-  - `max_attempts`
-  - `queue_cap`
-- Uninstall policy:
-  - `cleanup_on_uninstall`
+- Gravity Forms
+- WPForms
+- Contact Form 7
+- Ninja Forms
+- Fluent Forms
+- Formidable Forms
+- SureForms
 
-## Base URL resolution
+For each form you can choose **Count-only** (just the fact that a submission happened) or **Custom fields** (map specific fields you want reported).
 
-Effective API host order:
+## Supported ecommerce plugins
 
-1. `BURROW_BASE_URL` environment variable
-2. Saved `base_url` setting
-3. Default `https://app.useburrow.com`
+- **WooCommerce** — orders, line items, fulfillment, refunds, cancellations, and optional cart & checkout funnel tracking (add-to-cart, checkout started, abandoned carts, cart recovery, payment failures).
+- **SureCart** — orders, purchased items, cancellations, and refunds. (Cart-level funnel events aren't available because the SureCart cart runs on SureCart's hosted platform.)
 
-Project deep-links still rewrite an `api.` host to `app.` for the browser UI.
+## How it works
 
-## Outbox Table
+1. Install and activate the plugin — you'll land in the setup wizard.
+2. Connect with your Burrow API key ([find it here](https://app.useburrow.com/settings)) and pick your project.
+3. Select the integrations the wizard detected and choose what to track.
+4. Optionally queue a historical backfill, then watch events arrive in Burrow.
 
-Activation migration creates `{prefix}burrow_outbox` with:
+After setup, **Burrow → Settings** lets you adjust integrations any time, and **Burrow → Outbox** shows exactly what has been sent, queued, or retried.
 
-- event identity: `event_key` (unique)
-- routing metadata: `channel`, `event_name`
-- payload: `payload_json`
-- state: `status`, `attempt_count`, `max_attempts`, `last_error`, `next_attempt_at`
-- timestamps: `created_at`, `updated_at`, `sent_at`
+## What gets sent (and what doesn't)
 
-## Deterministic Event Keys
+- Form events include the form name, a submission ID, a timestamp, and **only the fields you explicitly map**.
+- Order events include order totals, currency, item names and quantities, and shipping region — never customer PII.
+- Hourly health pings and a weekly stack snapshot (plugin inventory and update availability) help you keep the site healthy.
 
-- Forms: `forms:<formId>:<submissionId>`
-- Ecommerce order: `ecommerce:order:<orderId>`
-- Ecommerce line item: `ecommerce:item:<orderId>:<lineItemId>`
+## Good to know
 
-## Event Source Slugs
+- Contact Form 7 doesn't store submissions by default — install [Flamingo](https://wordpress.org/plugins/flamingo/) if you want historical CF7 backfill.
+- SureForms and SureCart are tracked from the moment you enable them; historical backfill for these is coming in a future release.
 
-Event `source` is provider-specific. System snapshots/heartbeats use `snapshot`.
+---
 
-- `gravity-forms` / `fluent-forms` / `contact-form-7` / `ninja-forms` / `wpforms` / `formidable-forms`
-- `woocommerce` -> WooCommerce order/item events
-- `snapshot` -> system heartbeat/stack events
+## For developers
 
-## Scoped Event Dispatch
-
-After onboarding link succeeds, the plugin stores Burrow `ingestionKey` data and uses that project-scoped key for event dispatch (`/events` + backfill). Org API keys are used only during setup and are not persisted.
-
-## Admin Workflow
-
-1. Activate the plugin (redirects to **Burrow → Setup**)
-2. Enter base URL (defaults to `https://app.useburrow.com`) and API key
-3. Select a Burrow project and link
-4. Choose integrations and configure forms via the selective picker
-5. Sync contracts, then optionally queue a historical backfill (defaults to **Two years**)
-6. After onboarding, use **Burrow → Settings** for Overview / Integrations / provider config / Connection relink (saves auto-sync contracts)
-
-## Cron Jobs
-
-- `burrow_outbox_worker` (minute)
-- `burrow_backfill_worker` (minute / single-event kicks)
-- `burrow_system_heartbeat` (hourly)
-- `burrow_system_stack_snapshot` (weekly)
-- `burrow_outbox_cleanup` (daily)
-
-## Development
-
-### Install test dependencies
+Contributions and local development:
 
 ```bash
-composer install
+composer install   # requires the PHP SDK path repo at ../burrow-sdk/php (useburrow/sdk-php ^0.9.9)
+composer test      # PHPUnit suite
+./scripts/build-release.sh   # builds dist/burrow-wordpress-plugin.zip with vendor included
 ```
 
-Requires the PHP SDK path repo at `../burrow-sdk/php` (useburrow/sdk-php `^0.9.9`).
-
-### Run tests
-
-```bash
-composer test
-```
-
-### Build release zip (includes `vendor`)
-
-`vendor` is ignored in source control. To produce a WordPress-installable artifact with dependencies included:
-
-```bash
-./scripts/build-release.sh
-```
-
-This writes:
-
-- `dist/burrow-wordpress-plugin.zip`
-
-### Icon keys
-
-- Event icons use Lucide icon key strings.
-- Source: [https://lucide.dev/icons](https://lucide.dev/icons)
-
-## Manual QA Checklist
-
-- Fresh connect uses `app.useburrow.com` without manual URL edits.
-- `BURROW_BASE_URL` overrides the saved base URL for API calls.
-- Discover/link actions store routing IDs and ingestion key.
-- WPForms / Formidable Forms appear in the wizard when installed and selected.
-- Form picker sorts by 120-day volume, gates save until ≥1 form is added.
-- Forms contract sync writes contract metadata (`syncedAt/hash/version`).
-- Form submissions enqueue `forms.submission.received` using contract-approved fields only.
-- WooCommerce checkout enqueues order + line-item events with deterministic keys.
-- During simulated Burrow outage, events move to retrying and later sent when endpoint recovers.
-- Dashboard/Outbox bulk retry requeues all failed rows.
-- Stack snapshots report WordPress core `updateAvailable` when a core upgrade exists.
-- Settings saves sync contracts without re-running full onboarding.
+- Events use deterministic keys (e.g. `forms:<formId>:<submissionId>`) for safe retries and dedupe.
+- Delivery is enqueue-first through a durable `{prefix}burrow_outbox` table with exponential backoff.
+- Event icons use [Lucide](https://lucide.dev/icons) icon key strings.
+- Releases are built by GitHub Actions on `v*` tags.
