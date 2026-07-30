@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.1.1
+Stable tag: 1.2.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,8 +17,8 @@ Burrow is a lightweight WordPress plugin that delivers powerful WooCommerce repo
 **Features:**
 
 * Minimal setup — a guided onboarding wizard walks you through connection and configuration
-* WooCommerce analytics: track purchases, order lifecycle events, and revenue automatically
-* Form submission tracking for Gravity Forms, WPForms, Contact Form 7, Ninja Forms, Fluent Forms, and Formidable Forms
+* WooCommerce and SureCart analytics: track purchases, order lifecycle events, and revenue automatically
+* Form submission tracking for Gravity Forms, WPForms, Contact Form 7, Ninja Forms, Fluent Forms, Formidable Forms, and SureForms
 * Resilient queued sync keeps events safe during temporary downtime
 * Contract-based event schema for consistent, reliable WooCommerce reporting
 * Historical data backfill to populate Burrow with past submissions and orders
@@ -27,12 +27,14 @@ Burrow is a lightweight WordPress plugin that delivers powerful WooCommerce repo
 **Works With:**
 
 * WooCommerce (orders, order lifecycle, line items, revenue tracking)
+* SureCart (orders, purchased items, cancellations, refunds)
 * Gravity Forms
 * WPForms
 * Contact Form 7
 * Ninja Forms
 * Fluent Forms
 * Formidable Forms
+* SureForms
 
 **Why Burrow?**
 
@@ -72,11 +74,15 @@ Sign up at [useburrow.com](https://useburrow.com) and find your API key at [app.
 
 = Which form plugins are supported? =
 
-Burrow auto-detects and supports Gravity Forms, WPForms, Contact Form 7, Ninja Forms, Fluent Forms, and Formidable Forms. The onboarding wizard only shows plugins that are active on your site.
+Burrow auto-detects and supports Gravity Forms, WPForms, Contact Form 7, Ninja Forms, Fluent Forms, Formidable Forms, and SureForms. The onboarding wizard only shows plugins that are active on your site.
 
 = Does Burrow work with WooCommerce? =
 
-Yes. Burrow tracks WooCommerce order lifecycle events including order placement, fulfillment, refunds, and cancellations along with line-item detail.
+Yes. Burrow tracks WooCommerce order lifecycle events including order placement, fulfillment, refunds, and cancellations along with line-item detail. Optional funnel tracking covers add-to-cart, checkout, and abandonment events.
+
+= Does Burrow work with SureCart? =
+
+Yes. Burrow tracks SureCart orders, purchased items, cancellations, and refunds. Cart-level funnel events are not available because the SureCart cart runs on SureCart's hosted platform.
 
 = Can I backfill historical data? =
 
@@ -99,6 +105,12 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 5. Outbox — monitor queued, sent, and failed events with payload inspection.
 
 == Changelog ==
+
+= 1.2.0 =
+* SureForms: full forms integration — realtime submission tracking via `srfm_form_submit`, wizard setup with count-only and custom-field mapping, and 120-day submission stats.
+* SureCart: ecommerce integration — `order.placed` and `item.purchased` at checkout confirmation, cancellations and refunds via SureCart webhooks, minor-unit currency conversion, and opaque customer identity.
+* Wizard: SureForms and SureCart appear in integration detection, setup steps, Settings tabs, and the review checklist.
+* Wizard: sidebar step preview and review readiness now include WPForms and Formidable Forms.
 
 = 1.1.1 =
 * Admin: fix fatal error `Call to undefined method Burrow_Admin::render_woocommerce_step()` — restore the WooCommerce setup step renderer removed in the 1.1.0 refactor while its wizard and Settings call sites remained.
