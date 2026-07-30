@@ -2677,15 +2677,15 @@ class Burrow_Admin {
 		$selected = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
 			? $settings['onboarding']['selected_integrations']
 			: array();
-		$forms_selected = array_intersect( $selected, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ) );
+		$forms_selected = array_intersect( $selected, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' ) );
 		if ( ! empty( $forms_selected ) ) {
 			$notes[] = __( 'Backfill includes events for configured forms contracts.', 'burrow' );
 		}
 		if ( in_array( 'sure-forms', $selected, true ) ) {
-			$notes[] = __( 'SureForms historical backfill is not yet supported; new submissions are tracked from now on.', 'burrow' );
+			$notes[] = __( 'SureForms entries are backfilled from the local entries table. Forms with GDPR "do not store entries" enabled have no stored history to backfill.', 'burrow' );
 		}
 		if ( in_array( 'surecart', $selected, true ) ) {
-			$notes[] = __( 'SureCart historical backfill is not yet supported; new orders are tracked from now on.', 'burrow' );
+			$notes[] = __( 'SureCart orders are backfilled from the SureCart platform API in small batches, so large stores may take several worker cycles to complete.', 'burrow' );
 		}
 
 		if ( in_array( 'woocommerce', $selected, true ) ) {
@@ -3830,9 +3830,37 @@ class Burrow_Admin {
 			$keys = array_merge( $keys, $this->get_enabled_contract_keys( (array) ( $settings['forms_contracts'] ?? array() ) ) );
 		}
 		if ( in_array( 'ecommerce', $selected_sources, true ) ) {
-			$keys[] = 'woocommerce:orders';
+			$commerce = $this->enabled_backfill_commerce_providers( $settings );
+			if ( in_array( 'woocommerce', $commerce, true ) ) {
+				$keys[] = 'woocommerce:orders';
+			}
+			if ( in_array( 'surecart', $commerce, true ) ) {
+				$keys[] = 'surecart:orders';
+			}
 		}
 		return array_values( array_unique( $keys ) );
+	}
+
+	/**
+	 * Commerce providers currently eligible for backfill.
+	 *
+	 * @param array<string,mixed> $settings Settings.
+	 * @return string[]
+	 */
+	private function enabled_backfill_commerce_providers( array $settings ) {
+		$selected_integrations = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
+			? $settings['onboarding']['selected_integrations']
+			: array();
+		$providers = array();
+		$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
+		if ( 'track' === $woo_mode || in_array( 'woocommerce', $selected_integrations, true ) ) {
+			$providers[] = 'woocommerce';
+		}
+		$surecart_mode = isset( $settings['onboarding']['surecart_mode'] ) ? (string) $settings['onboarding']['surecart_mode'] : 'track';
+		if ( in_array( 'surecart', $selected_integrations, true ) && 'track' === $surecart_mode ) {
+			$providers[] = 'surecart';
+		}
+		return $providers;
 	}
 
 	private function backfill_source_labels( array $settings ) {
@@ -3841,13 +3869,18 @@ class Burrow_Admin {
 		if ( ! empty( $form_keys ) ) {
 			$labels['forms'] = __( 'Forms', 'burrow' );
 		}
-		$selected_integrations = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
-			? $settings['onboarding']['selected_integrations']
-			: array();
-		$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
-		$woo_enabled = 'track' === $woo_mode || in_array( 'woocommerce', $selected_integrations, true );
-		if ( $woo_enabled ) {
-			$labels['ecommerce'] = __( 'WooCommerce', 'burrow' );
+		$commerce = $this->enabled_backfill_commerce_providers( $settings );
+		if ( ! empty( $commerce ) ) {
+			$commerce_names = array(
+				'woocommerce' => __( 'WooCommerce', 'burrow' ),
+				'surecart'    => __( 'SureCart', 'burrow' ),
+			);
+			$labels['ecommerce'] = implode( ' & ', array_map(
+				static function ( $key ) use ( $commerce_names ) {
+					return $commerce_names[ $key ] ?? $key;
+				},
+				$commerce
+			) );
 		}
 		return $labels;
 	}

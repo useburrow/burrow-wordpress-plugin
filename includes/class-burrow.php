@@ -2124,9 +2124,9 @@ class Burrow {
 		}
 		$job['activeContractKeys'] = $keys;
 		$job['totalForms']         = count( $keys );
-		$has_woo_key              = in_array( 'woocommerce:orders', $keys, true );
+		$has_ecommerce_key         = in_array( 'woocommerce:orders', $keys, true ) || in_array( 'surecart:orders', $keys, true );
 		$resolved_ecommerce_source = trim( (string) $this->resolve_backfill_source_for_channel( 'ecommerce', $settings ) );
-		if ( $has_woo_key && '' === $resolved_ecommerce_source ) {
+		if ( $has_ecommerce_key && '' === $resolved_ecommerce_source ) {
 			$job['status']    = 'failed';
 			$job['lastError'] = 'Missing ecommerce routing for backfill. Re-link project and confirm ecommerce source provisioning.';
 			$job['updatedAt'] = gmdate( 'c' );
@@ -2358,6 +2358,9 @@ class Burrow {
 		if ( $woo_enabled ) {
 			$keys[] = 'woocommerce:orders';
 		}
+		if ( $this->is_surecart_tracking_enabled( $settings ) ) {
+			$keys[] = 'surecart:orders';
+		}
 		return $keys;
 	}
 
@@ -2378,6 +2381,9 @@ class Burrow {
 	private function collect_backfill_events_for_key( $contract_key, array $contracts, array $settings, $window_start, $window_end, $offset, $limit, $routed_source, $routed_default ) {
 		if ( 'woocommerce:orders' === $contract_key ) {
 			return $this->collect_woocommerce_backfill_events( $settings, $window_start, $window_end, $offset, $limit );
+		}
+		if ( 'surecart:orders' === $contract_key ) {
+			return $this->collect_surecart_backfill_events( $settings, $window_start, $window_end, $offset );
 		}
 		if ( ! isset( $contracts[ $contract_key ] ) || ! is_array( $contracts[ $contract_key ] ) ) {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
@@ -2403,6 +2409,8 @@ class Burrow {
 			$entries = $this->get_wpforms_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} elseif ( 'formidable-forms' === $provider ) {
 			$entries = $this->get_formidable_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
+		} elseif ( 'sure-forms' === $provider ) {
+			$entries = $this->get_sureforms_entries_for_backfill( $wp_form_id, $window_start, $window_end, $offset, $limit );
 		} else {
 			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => '' );
 		}
@@ -2533,6 +2541,137 @@ class Burrow {
 			'events'     => $events,
 			'nextOffset' => $offset + count( $orders ),
 			'done'       => count( $orders ) < $limit,
+			'warning'    => '',
+		);
+	}
+
+	/**
+	 * Collect SureCart order backfill events by paging the SureCart API through
+	 * the SureCart plugin's PHP models (authenticated with the site's own token).
+	 *
+	 * The API lists orders newest-first, so paging stops once a page falls
+	 * entirely before the backfill window. Events reuse the same checkout-id
+	 * identity and stable timestamps as realtime tracking, so deterministic
+	 * event keys dedupe any overlap automatically.
+	 *
+	 * @param array<string,mixed> $settings     Settings.
+	 * @param string              $window_start Window start ISO.
+	 * @param string              $window_end   Window end ISO.
+	 * @param int                 $offset       Orders already examined (multiple of page size).
+	 * @return array{events:array<int,array<string,mixed>>,nextOffset:int,done:bool,warning:string}
+	 */
+	private function collect_surecart_backfill_events( array $settings, $window_start, $window_end, $offset ) {
+		if ( ! class_exists( '\SureCart\Models\Order' ) ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'SureCart plugin is not active; skipped SureCart backfill.' );
+		}
+
+		$per_page = 10;
+		$page     = (int) floor( max( 0, (int) $offset ) / $per_page ) + 1;
+
+		try {
+			$result = \SureCart\Models\Order::with(
+				array( 'checkout', 'checkout.line_items', 'line_item.price', 'price.product' )
+			)->paginate(
+				array(
+					'per_page' => $per_page,
+					'page'     => $page,
+				)
+			);
+		} catch ( \Throwable $e ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'SureCart backfill request failed: ' . $e->getMessage() );
+		}
+
+		if ( is_wp_error( $result ) ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'SureCart backfill request failed: ' . $result->get_error_message() );
+		}
+
+		$orders = array();
+		if ( is_array( $result ) && isset( $result['data'] ) ) {
+			$orders = (array) $result['data'];
+		} elseif ( is_object( $result ) && isset( $result['data'] ) ) {
+			$orders = (array) $result['data'];
+		} elseif ( is_object( $result ) && isset( $result->data ) ) {
+			$orders = (array) $result->data;
+		}
+
+		if ( empty( $orders ) ) {
+			return array(
+				'events'     => array(),
+				'nextOffset' => $offset,
+				'done'       => true,
+				'warning'    => 1 === $page ? 'No SureCart orders found in the selected backfill window.' : '',
+			);
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			return array( 'events' => array(), 'nextOffset' => $offset, 'done' => true, 'warning' => 'Missing ecommerce routing: ' . $e->getMessage() );
+		}
+
+		$start_ts = '' !== (string) $window_start ? strtotime( (string) $window_start ) : 0;
+		$end_ts   = '' !== (string) $window_end ? strtotime( (string) $window_end ) : time();
+		$provider = new BurrowWP\Providers\Ecommerce\SureCartProvider();
+		$events   = array();
+		$page_exhausts_window = false;
+
+		foreach ( $orders as $order ) {
+			if ( ! is_object( $order ) ) {
+				continue;
+			}
+			$created_iso = BurrowWP\Providers\Ecommerce\SureCartProvider::resolve_created_at( $order );
+			$created_ts  = null !== $created_iso ? strtotime( $created_iso ) : null;
+			if ( null !== $created_ts && $start_ts && $created_ts < $start_ts ) {
+				// Orders are newest-first: everything after this point is older than the window.
+				$page_exhausts_window = true;
+				break;
+			}
+			if ( null !== $created_ts && $created_ts > $end_ts ) {
+				continue;
+			}
+			if ( ! in_array( (string) ( $order->status ?? '' ), array( 'paid', 'processing' ), true ) ) {
+				continue;
+			}
+			$checkout = $order->checkout ?? null;
+			if ( ! is_object( $checkout ) ) {
+				continue;
+			}
+
+			$data = $provider->normalize_order( $checkout );
+			if ( empty( $data ) ) {
+				continue;
+			}
+			$submitted_at   = BurrowWP\Providers\Ecommerce\SureCartProvider::resolve_created_at( $checkout ) ?? $created_iso;
+			$customer_token = (string) $data['customerToken'];
+
+			$order_input = $this->build_order_placed_input( $data, $submitted_at, $settings, 'surecart', 'sc_order_' );
+			try {
+				$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
+					$order_input,
+					$routing_resolver
+				);
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow backfill] surecart order.placed build failed for checkout ' . $data['orderId'] . ': ' . $e->getMessage() );
+				continue;
+			}
+			foreach ( (array) $data['items'] as $item ) {
+				$item_input = $this->build_item_purchased_input( $item, $data, $submitted_at, $customer_token, $settings, 'surecart' );
+				try {
+					$events[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
+						$item_input,
+						$routing_resolver
+					);
+				} catch ( \Throwable $e ) {
+					error_log( '[Burrow backfill] surecart item.purchased build failed: ' . $e->getMessage() );
+					continue;
+				}
+			}
+		}
+
+		return array(
+			'events'     => $events,
+			'nextOffset' => $offset + count( $orders ),
+			'done'       => $page_exhausts_window || count( $orders ) < $per_page,
 			'warning'    => '',
 		);
 	}
@@ -2905,6 +3044,63 @@ class Burrow {
 				'submissionId' => (string) $entry->id,
 				'rawValues'    => $values,
 				'submittedAt'  => $this->resolve_iso8601( $entry->created_at ?? null ),
+			);
+		}
+		return $out;
+	}
+
+	/**
+	 * Load SureForms entries for backfill window from the srfm_entries table.
+	 *
+	 * Stored form_data uses SureForms' raw field keys; values are re-keyed to
+	 * field slugs so they match realtime submissions and contract mappings.
+	 *
+	 * @param string $form_id      Form ID.
+	 * @param string $window_start ISO timestamp.
+	 * @param string $window_end   ISO timestamp.
+	 * @param int    $offset       Offset cursor.
+	 * @param int    $limit        Limit.
+	 * @return array<int,array<string,mixed>>
+	 */
+	private function get_sureforms_entries_for_backfill( $form_id, $window_start, $window_end, $offset, $limit ) {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return array();
+		}
+		$table = $wpdb->prefix . 'srfm_entries';
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		if ( $table !== $exists ) {
+			return array();
+		}
+		$start = $this->iso_to_mysql_datetime( $window_start );
+		$end   = $this->iso_to_mysql_datetime( $window_end );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$sql = $wpdb->prepare(
+			"SELECT ID, form_data, created_at FROM {$table} WHERE form_id = %d AND status != 'trash' AND created_at >= %s AND created_at <= %s ORDER BY ID ASC LIMIT %d OFFSET %d",
+			(int) $form_id,
+			'' !== $start ? $start : '1970-01-01 00:00:00',
+			'' !== $end ? $end : gmdate( 'Y-m-d H:i:s' ),
+			(int) max( 1, $limit ),
+			(int) max( 0, $offset )
+		);
+		$rows = $wpdb->get_results( $sql, ARRAY_A );
+		if ( ! is_array( $rows ) || empty( $rows ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $rows as $row ) {
+			if ( ! is_array( $row ) || empty( $row['ID'] ) ) {
+				continue;
+			}
+			$form_data = json_decode( (string) ( $row['form_data'] ?? '' ), true );
+			$values    = is_array( $form_data )
+				? BurrowWP\Providers\Forms\SureFormsProvider::normalize_stored_entry_values( $form_data )
+				: array();
+			$out[] = array(
+				'submissionId' => (string) $row['ID'],
+				'rawValues'    => $values,
+				'submittedAt'  => $this->resolve_iso8601( $row['created_at'] ?? null ),
 			);
 		}
 		return $out;

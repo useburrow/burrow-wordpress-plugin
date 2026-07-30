@@ -3,7 +3,7 @@ Contributors: useburrow
 Tags: woocommerce reporting, form tracking, ecommerce analytics, event tracking, woocommerce analytics
 Requires at least: 5.6
 Tested up to: 6.7
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -86,7 +86,7 @@ Yes. Burrow tracks SureCart orders, purchased items, cancellations, and refunds.
 
 = Can I backfill historical data? =
 
-Yes. After completing the onboarding wizard, you can backfill past form submissions and WooCommerce orders from predefined time windows (7/30/90 days, 1 year, 2 years, or all time). The default window is two years. Contact Form 7 backfill requires the Flamingo plugin for stored submissions.
+Yes. After completing the onboarding wizard, you can backfill past form submissions and store orders (WooCommerce and SureCart) from predefined time windows (7/30/90 days, 1 year, 2 years, or all time). The default window is two years. Contact Form 7 backfill requires the Flamingo plugin for stored submissions, and SureForms backfill covers forms that store entries locally.
 
 = What data is sent to Burrow? =
 
@@ -105,6 +105,11 @@ Yes. Events are queued locally in a durable outbox table and retried automatical
 5. Outbox — monitor queued, sent, and failed events with payload inspection.
 
 == Changelog ==
+
+= 1.3.0 =
+* SureForms: historical backfill from the local entries table, with stored field keys re-mapped to the same slugs used by realtime tracking so contract field mappings apply to history too.
+* SureCart: historical order backfill paged from the SureCart platform API using the site's existing SureCart credentials; deterministic event keys dedupe any overlap with realtime tracking.
+* Backfill: the Finish step now reflects SureForms/SureCart support, and the ecommerce source label lists the enabled commerce providers.
 
 = 1.2.0 =
 * SureForms: full forms integration — realtime submission tracking via `srfm_form_submit`, wizard setup with count-only and custom-field mapping, and 120-day submission stats.

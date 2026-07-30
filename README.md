@@ -48,7 +48,8 @@ After setup, **Burrow → Settings** lets you adjust integrations any time, and 
 ## Good to know
 
 - Contact Form 7 doesn't store submissions by default — install [Flamingo](https://wordpress.org/plugins/flamingo/) if you want historical CF7 backfill.
-- SureForms and SureCart are tracked from the moment you enable them; historical backfill for these is coming in a future release.
+- SureForms backfill reads the entries stored on your site, so forms with GDPR "don't store entries" enabled have no history to import.
+- SureCart backfill pulls past orders from the SureCart platform in small batches — large stores may take a little while to finish, and events keep flowing in the meantime.
 
 ---
 

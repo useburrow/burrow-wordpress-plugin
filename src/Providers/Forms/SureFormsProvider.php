@@ -40,4 +40,49 @@ class SureFormsProvider implements FormsProviderInterface {
 			'rawValues'    => $values,
 		);
 	}
+
+	/**
+	 * Extract the field slug from a SureForms stored field key.
+	 *
+	 * Stored entries keep raw keys like "srfm-input-{id}-lbl-{encoded}-{slug}";
+	 * the realtime submit payload (and therefore contract field mappings) uses
+	 * just the slug. Mirrors SureForms' own prepare_submission_data() split.
+	 *
+	 * @param string $key Raw stored field key.
+	 * @return string Slug, or '' when the key has no field slug.
+	 */
+	public static function field_key_to_slug( $key ) {
+		$parts = explode( '-lbl-', (string) $key );
+		if ( count( $parts ) < 2 || '' === $parts[1] ) {
+			return '';
+		}
+		$tokens = explode( '-', $parts[1] );
+		if ( count( $tokens ) < 2 ) {
+			return '';
+		}
+		return implode( '-', array_slice( $tokens, 1 ) );
+	}
+
+	/**
+	 * Convert a stored srfm_entries form_data map (raw field keys) into the
+	 * slug-keyed values shape used by realtime submissions.
+	 *
+	 * @param array<string,mixed> $form_data Decoded form_data from the entries table.
+	 * @return array<string,string>
+	 */
+	public static function normalize_stored_entry_values( array $form_data ) {
+		$values = array();
+		foreach ( $form_data as $key => $value ) {
+			$slug = self::field_key_to_slug( (string) $key );
+			if ( '' === $slug ) {
+				continue;
+			}
+			if ( is_array( $value ) ) {
+				// Upload fields store arrays of URL-encoded file URLs.
+				$value = implode( ', ', array_map( 'rawurldecode', array_map( 'strval', $value ) ) );
+			}
+			$values[ $slug ] = is_scalar( $value ) ? (string) $value : '';
+		}
+		return $values;
+	}
 }

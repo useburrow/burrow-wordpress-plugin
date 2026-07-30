@@ -90,4 +90,34 @@ class FormsProviderTest extends TestCase {
 		$this->assertNotSame( '', $result['submissionId'] );
 		$this->assertStringStartsWith( 'srfm_', $result['submissionId'] );
 	}
+
+	public function test_sureforms_field_key_to_slug_extracts_slug_after_label_token() {
+		$this->assertSame(
+			'email-address',
+			SureFormsProvider::field_key_to_slug( 'srfm-email-abc123-lbl-RW1haWw=-email-address' )
+		);
+		$this->assertSame(
+			'name',
+			SureFormsProvider::field_key_to_slug( 'srfm-input-9f2-lbl-TmFtZQ==-name' )
+		);
+		$this->assertSame( '', SureFormsProvider::field_key_to_slug( 'srfm-honeypot' ) );
+		$this->assertSame( '', SureFormsProvider::field_key_to_slug( 'srfm-input-9f2-lbl-TmFtZQ==' ) );
+	}
+
+	public function test_sureforms_stored_entry_values_are_rekeyed_to_slugs() {
+		$values = SureFormsProvider::normalize_stored_entry_values(
+			array(
+				'srfm-input-9f2-lbl-TmFtZQ==-name'             => 'Jane',
+				'srfm-email-abc-lbl-RW1haWw=-email-address'    => 'jane@example.com',
+				'srfm-upload-x1-lbl-RmlsZQ==-file'             => array( 'https%3A%2F%2Fexample.com%2Fa.pdf' ),
+				'srfm-honeypot'                                => 'ignored',
+			)
+		);
+
+		$this->assertSame( 'Jane', $values['name'] );
+		$this->assertSame( 'jane@example.com', $values['email-address'] );
+		$this->assertSame( 'https://example.com/a.pdf', $values['file'] );
+		$this->assertArrayNotHasKey( 'srfm-honeypot', $values );
+		$this->assertCount( 3, $values );
+	}
 }
