@@ -191,7 +191,7 @@ class Burrow_Admin {
 						'platform'  => 'wordpress',
 						'capabilities' => array(
 							'forms'            => array_values( $this->detect_forms_capabilities() ),
-							'ecommerce'        => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(),
+							'ecommerce'        => array_values( $this->detect_ecommerce_capabilities() ),
 							'ecommerce_funnel' => class_exists( 'WooCommerce' ),
 							'system'           => true,
 						),
@@ -221,6 +221,8 @@ class Burrow_Admin {
 				$settings['onboarding']['gravity_configured']    = false;
 				$settings['onboarding']['woocommerce_confirmed'] = false;
 				$settings['onboarding']['woocommerce_mode']      = in_array( 'woocommerce', $selected, true ) ? 'track' : 'off';
+				$settings['onboarding']['surecart_confirmed']    = false;
+				$settings['onboarding']['surecart_mode']         = in_array( 'surecart', $selected, true ) ? 'track' : 'off';
 				$settings['onboarding']['provider_configured']   = array();
 			} else {
 				$configured = isset( $settings['onboarding']['provider_configured'] ) && is_array( $settings['onboarding']['provider_configured'] )
@@ -241,6 +243,13 @@ class Burrow_Admin {
 				} elseif ( ! in_array( 'woocommerce', $previous, true ) ) {
 					$settings['onboarding']['woocommerce_mode']      = 'track';
 					$settings['onboarding']['woocommerce_confirmed'] = false;
+				}
+				if ( ! in_array( 'surecart', $selected, true ) ) {
+					$settings['onboarding']['surecart_mode']      = 'off';
+					$settings['onboarding']['surecart_confirmed'] = false;
+				} elseif ( ! in_array( 'surecart', $previous, true ) ) {
+					$settings['onboarding']['surecart_mode']      = 'track';
+					$settings['onboarding']['surecart_confirmed'] = false;
 				}
 				$settings['forms_contracts'] = $this->prune_contracts_for_selected_integrations( $settings, $selected );
 			}
@@ -285,7 +294,7 @@ class Burrow_Admin {
 			}
 		} elseif ( 'save_provider_contracts' === $action ) {
 			$provider = isset( $_POST['provider'] ) ? sanitize_key( wp_unslash( $_POST['provider'] ) ) : '';
-			$allowed  = array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' );
+			$allowed  = array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' );
 			$step     = $provider;
 			$settings_mode = ! empty( $_POST['settings_mode'] ) || $this->is_onboarding_complete( $settings );
 			if ( ! in_array( $provider, $allowed, true ) ) {
@@ -352,6 +361,36 @@ class Burrow_Admin {
 				$step = 'woocommerce';
 			} else {
 				$step = $this->next_config_step( $settings, 'woocommerce' );
+			}
+		} elseif ( 'confirm_surecart' === $action ) {
+			$mode = isset( $_POST['surecart_mode'] ) ? sanitize_key( wp_unslash( $_POST['surecart_mode'] ) ) : 'track';
+			if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
+				$mode = 'track';
+			}
+			$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
+			if ( 'off' === $mode ) {
+				$selected = array_values( array_diff( $selected, array( 'surecart' ) ) );
+			} elseif ( ! in_array( 'surecart', $selected, true ) ) {
+				$selected[] = 'surecart';
+			}
+			$settings['onboarding']['selected_integrations'] = $selected;
+			$settings['onboarding']['surecart_mode']         = $mode;
+			$settings['onboarding']['surecart_confirmed']    = true;
+			$this->options_repo->save_settings( $settings );
+			$message = 'off' === $mode
+				? __( 'SureCart tracking disabled.', 'burrow' )
+				: __( 'SureCart tracking enabled.', 'burrow' );
+			$settings_mode = ! empty( $_POST['settings_mode'] ) || $this->is_onboarding_complete( $settings );
+			if ( $settings_mode ) {
+				$sync_message = $this->autosync_forms_contract( $settings );
+				if ( '' !== $sync_message ) {
+					$message .= ' ' . $sync_message;
+				} else {
+					$message .= ' ' . __( 'Synced to Burrow.', 'burrow' );
+				}
+				$step = 'surecart';
+			} else {
+				$step = $this->next_config_step( $settings, 'surecart' );
 			}
 		} elseif ( 'sync_forms_contract' === $action ) {
 			$routing_error = $this->validate_routing_before_contract_sync( $settings );
@@ -702,8 +741,13 @@ class Burrow_Admin {
 				<?php elseif ( 'fluent-forms' === $step ) : ?>
 					<?php $this->render_step_heading( 'fluent-forms', __( 'Fluent Forms Setup', 'burrow' ) ); ?>
 					<p class="description"><?php esc_html_e( 'Choose tracking mode for each Fluent Form.', 'burrow' ); ?></p>
+				<?php elseif ( 'sure-forms' === $step ) : ?>
+					<?php $this->render_step_heading( 'sure-forms', __( 'SureForms Setup', 'burrow' ) ); ?>
+					<p class="description"><?php esc_html_e( 'Choose tracking mode for each SureForm.', 'burrow' ); ?></p>
 				<?php elseif ( 'woocommerce' === $step ) : ?>
 					<?php $this->render_step_heading( 'woocommerce', __( 'WooCommerce Setup', 'burrow' ) ); ?>
+				<?php elseif ( 'surecart' === $step ) : ?>
+					<?php $this->render_step_heading( 'surecart', __( 'SureCart Setup', 'burrow' ) ); ?>
 				<?php elseif ( 'backfill' === $step ) : ?>
 					<?php $this->render_step_heading( 'backfill', __( 'Finish', 'burrow' ) ); ?>
 					<p class="description"><?php esc_html_e( 'Your setup is finalized. Optionally queue a historical backfill or head to the Dashboard.', 'burrow' ); ?></p>
@@ -742,8 +786,12 @@ class Burrow_Admin {
 						<?php $this->render_simple_forms_provider_step( 'wpforms', $this->list_wpforms() ); ?>
 					<?php elseif ( 'formidable-forms' === $step ) : ?>
 						<?php $this->render_simple_forms_provider_step( 'formidable-forms', $this->list_formidable_forms() ); ?>
+					<?php elseif ( 'sure-forms' === $step ) : ?>
+						<?php $this->render_simple_forms_provider_step( 'sure-forms', $this->list_sureforms() ); ?>
 					<?php elseif ( 'woocommerce' === $step ) : ?>
 						<?php $this->render_woocommerce_step(); ?>
+					<?php elseif ( 'surecart' === $step ) : ?>
+						<?php $this->render_surecart_step(); ?>
 					<?php elseif ( 'backfill' === $step ) : ?>
 						<?php $this->render_backfill_step( $settings ); ?>
 					<?php else : ?>
@@ -1095,7 +1143,7 @@ class Burrow_Admin {
 		$section  = isset( $_GET['section'] ) ? sanitize_key( wp_unslash( $_GET['section'] ) ) : ( isset( $_GET['step'] ) ? sanitize_key( wp_unslash( $_GET['step'] ) ) : 'overview' );
 		$allowed_sections = array_merge(
 			array( 'overview', 'integrations', 'connection' ),
-			array_values( array_intersect( $selected, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'woocommerce' ) ) )
+			array_values( array_intersect( $selected, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms', 'woocommerce', 'surecart' ) ) )
 		);
 		if ( ! in_array( $section, $allowed_sections, true ) ) {
 			$section = 'overview';
@@ -1204,6 +1252,8 @@ class Burrow_Admin {
 				</table>
 			<?php elseif ( 'woocommerce' === $section ) : ?>
 				<?php $this->render_settings_woocommerce_section( $settings ); ?>
+			<?php elseif ( 'surecart' === $section ) : ?>
+				<?php $this->render_settings_surecart_section( $settings ); ?>
 			<?php elseif ( 'gravity-forms' === $section ) : ?>
 				<input type="hidden" id="burrow-settings-mode-flag" value="1" />
 				<?php
@@ -1222,6 +1272,7 @@ class Burrow_Admin {
 					'fluent-forms'     => 'list_fluent_forms',
 					'wpforms'          => 'list_wpforms',
 					'formidable-forms' => 'list_formidable_forms',
+					'sure-forms'       => 'list_sureforms',
 				);
 				if ( isset( $list_method[ $section ] ) ) {
 					ob_start();
@@ -1238,7 +1289,7 @@ class Burrow_Admin {
 	}
 
 	private function render_settings_integrations_section( array $settings ) {
-		$detected = array_merge( $this->detect_forms_capabilities(), class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array() );
+		$detected = $this->detected_integrations();
 		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
 		$labels   = $this->integration_labels();
 		?>
@@ -1253,10 +1304,10 @@ class Burrow_Admin {
 				<label style="display:block;margin:8px 0;">
 					<input type="checkbox" name="integrations[]" value="<?php echo esc_attr( $key ); ?>" <?php checked( in_array( $key, $selected, true ) ); ?> />
 					<?php echo esc_html( (string) ( $labels[ $key ] ?? $key ) ); ?>
-					<?php if ( in_array( $key, $selected, true ) && 'woocommerce' !== $key ) : ?>
+					<?php if ( in_array( $key, $selected, true ) && ! in_array( $key, array( 'woocommerce', 'surecart' ), true ) ) : ?>
 						&nbsp;<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&section=' . rawurlencode( $key ) ) ); ?>"><?php esc_html_e( 'Configure forms', 'burrow' ); ?></a>
-					<?php elseif ( in_array( $key, $selected, true ) && 'woocommerce' === $key ) : ?>
-						&nbsp;<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&section=woocommerce' ) ); ?>"><?php esc_html_e( 'Configure', 'burrow' ); ?></a>
+					<?php elseif ( in_array( $key, $selected, true ) ) : ?>
+						&nbsp;<a href="<?php echo esc_url( admin_url( 'admin.php?page=burrow-setup&section=' . rawurlencode( $key ) ) ); ?>"><?php esc_html_e( 'Configure', 'burrow' ); ?></a>
 					<?php endif; ?>
 				</label>
 			<?php endforeach; ?>
@@ -1271,6 +1322,15 @@ class Burrow_Admin {
 	private function render_settings_woocommerce_section( array $settings ) {
 		ob_start();
 		$this->render_woocommerce_step();
+		$html = (string) ob_get_clean();
+		$html = preg_replace( '/(<form method="post"[^>]*>)/', '$1' . "\n\t\t\t<input type=\"hidden\" name=\"settings_mode\" value=\"1\" />", $html, 1 );
+		$html = str_replace( __( 'Save and Continue', 'burrow' ), __( 'Save & Sync to Burrow', 'burrow' ), $html );
+		echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+	}
+
+	private function render_settings_surecart_section( array $settings ) {
+		ob_start();
+		$this->render_surecart_step();
 		$html = (string) ob_get_clean();
 		$html = preg_replace( '/(<form method="post"[^>]*>)/', '$1' . "\n\t\t\t<input type=\"hidden\" name=\"settings_mode\" value=\"1\" />", $html, 1 );
 		$html = str_replace( __( 'Save and Continue', 'burrow' ), __( 'Save & Sync to Burrow', 'burrow' ), $html );
@@ -1566,13 +1626,17 @@ class Burrow_Admin {
 		$selected = (array) ( $settings['onboarding']['selected_integrations'] ?? array() );
 		$labels   = $this->integration_labels();
 		$timeline_labels = array(
-			'gravity-forms'  => 'Gravity Forms',
-			'contact-form-7' => 'Contact Form 7',
-			'ninja-forms'    => 'Ninja Forms',
-			'fluent-forms'   => 'Fluent Forms',
-			'woocommerce'    => 'WooCommerce',
+			'gravity-forms'    => 'Gravity Forms',
+			'contact-form-7'   => 'Contact Form 7',
+			'ninja-forms'      => 'Ninja Forms',
+			'fluent-forms'     => 'Fluent Forms',
+			'wpforms'          => 'WPForms',
+			'formidable-forms' => 'Formidable Forms',
+			'sure-forms'       => 'SureForms',
+			'woocommerce'      => 'WooCommerce',
+			'surecart'         => 'SureCart',
 		);
-		$provider_order = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'woocommerce' );
+		$provider_order = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms', 'woocommerce', 'surecart' );
 		?>
 		<form method="post">
 			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
@@ -1776,6 +1840,33 @@ class Burrow_Admin {
 		<?php
 	}
 
+	private function render_surecart_step() {
+		$settings = $this->options_repo->get_settings();
+		$mode     = isset( $settings['onboarding']['surecart_mode'] ) ? (string) $settings['onboarding']['surecart_mode'] : 'track';
+		if ( ! in_array( $mode, array( 'track', 'off' ), true ) ) {
+			$mode = 'track';
+		}
+		?>
+		<p><?php esc_html_e( 'Choose how SureCart should be handled for this project.', 'burrow' ); ?></p>
+		<p class="description"><?php esc_html_e( 'Burrow tracks SureCart orders, purchased items, cancellations, and refunds. Cart-level events are not available because the SureCart cart runs on its hosted platform.', 'burrow' ); ?></p>
+		<form method="post">
+			<?php wp_nonce_field( 'burrow_admin_action', 'burrow_nonce' ); ?>
+			<input type="hidden" name="burrow_action" value="confirm_surecart" />
+			<fieldset style="margin:12px 0 16px 0;">
+				<label style="display:block;margin-bottom:8px;">
+					<input type="radio" name="surecart_mode" value="track" <?php checked( 'track', $mode ); ?> />
+					<?php esc_html_e( 'Track SureCart events', 'burrow' ); ?>
+				</label>
+				<label style="display:block;">
+					<input type="radio" name="surecart_mode" value="off" <?php checked( 'off', $mode ); ?> />
+					<?php esc_html_e( 'Do not track SureCart events', 'burrow' ); ?>
+				</label>
+			</fieldset>
+			<?php submit_button( __( 'Save and Continue', 'burrow' ) ); ?>
+		</form>
+		<?php
+	}
+
 	private function render_simple_forms_provider_step( $provider, array $forms ) {
 		$provider = sanitize_key( (string) $provider );
 		$labels   = $this->integration_labels();
@@ -1848,7 +1939,7 @@ class Burrow_Admin {
 
 		$supports_custom_fields = in_array(
 			$provider,
-			array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ),
+			array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' ),
 			true
 		);
 		?>
@@ -2230,6 +2321,17 @@ class Burrow_Admin {
 			return array( 'count120d' => $count, 'lastSubmittedAt' => $last );
 		}
 
+		if ( 'sure-forms' === $provider ) {
+			$table = $wpdb->prefix . 'srfm_entries';
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( $table !== $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) ) {
+				return $empty;
+			}
+			$count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE form_id = %d AND created_at >= %s", (int) $form_id, $since ) );
+			$last  = (string) $wpdb->get_var( $wpdb->prepare( "SELECT created_at FROM {$table} WHERE form_id = %d ORDER BY ID DESC LIMIT 1", (int) $form_id ) );
+			return array( 'count120d' => $count, 'lastSubmittedAt' => $last );
+		}
+
 		if ( 'formidable-forms' === $provider ) {
 			$table = $wpdb->prefix . 'frm_items';
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
@@ -2380,7 +2482,7 @@ class Burrow_Admin {
 		foreach ( $selected as $integration ) {
 			$integration = (string) $integration;
 			$status_label = __( 'Configured', 'burrow' );
-			if ( in_array( $integration, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms' ), true ) ) {
+			if ( in_array( $integration, array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'sure-forms' ), true ) ) {
 				$has_contracts = ! empty( $provider_contract_counts[ $integration ] );
 				$is_provider_confirmed = ! empty( $provider_configured[ $integration ] );
 				if ( $has_contracts ) {
@@ -2392,6 +2494,10 @@ class Burrow_Admin {
 				}
 			} elseif ( 'woocommerce' === $integration ) {
 				$status_label = ! empty( $settings['onboarding']['woocommerce_confirmed'] )
+					? __( 'Configured', 'burrow' )
+					: __( 'Needs setup', 'burrow' );
+			} elseif ( 'surecart' === $integration ) {
+				$status_label = ! empty( $settings['onboarding']['surecart_confirmed'] )
 					? __( 'Configured', 'burrow' )
 					: __( 'Needs setup', 'burrow' );
 			}
@@ -2575,6 +2681,12 @@ class Burrow_Admin {
 		if ( ! empty( $forms_selected ) ) {
 			$notes[] = __( 'Backfill includes events for configured forms contracts.', 'burrow' );
 		}
+		if ( in_array( 'sure-forms', $selected, true ) ) {
+			$notes[] = __( 'SureForms historical backfill is not yet supported; new submissions are tracked from now on.', 'burrow' );
+		}
+		if ( in_array( 'surecart', $selected, true ) ) {
+			$notes[] = __( 'SureCart historical backfill is not yet supported; new orders are tracked from now on.', 'burrow' );
+		}
 
 		if ( in_array( 'woocommerce', $selected, true ) ) {
 			$woo_mode = isset( $settings['onboarding']['woocommerce_mode'] ) ? (string) $settings['onboarding']['woocommerce_mode'] : 'track';
@@ -2670,7 +2782,7 @@ class Burrow_Admin {
 		$provider_configured = isset( $settings['onboarding']['provider_configured'] ) && is_array( $settings['onboarding']['provider_configured'] )
 			? $settings['onboarding']['provider_configured']
 			: array();
-		$form_providers = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' );
+		$form_providers = array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' );
 		foreach ( $form_providers as $provider ) {
 			if ( in_array( $provider, $selected, true ) && empty( $provider_configured[ $provider ] ) ) {
 				return $provider;
@@ -2678,6 +2790,9 @@ class Burrow_Admin {
 		}
 		if ( in_array( 'woocommerce', $selected, true ) && empty( $settings['onboarding']['woocommerce_confirmed'] ) ) {
 			return 'woocommerce';
+		}
+		if ( in_array( 'surecart', $selected, true ) && empty( $settings['onboarding']['surecart_confirmed'] ) ) {
+			return 'surecart';
 		}
 		if ( empty( $settings['contract_sync']['syncedAt'] ) ) {
 			return 'review';
@@ -2702,7 +2817,7 @@ class Burrow_Admin {
 			'burrow_notice' => rawurlencode( $message ),
 			'burrow_error'  => $is_error ? '1' : '0',
 		);
-		if ( 'burrow-setup' === $page && in_array( $step, array( 'overview', 'integrations', 'connection', 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'woocommerce' ), true ) ) {
+		if ( 'burrow-setup' === $page && in_array( $step, array( 'overview', 'integrations', 'connection', 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms', 'woocommerce', 'surecart' ), true ) ) {
 			// Keep Settings section context after save.
 			$args['section'] = $step;
 		}
@@ -2856,7 +2971,7 @@ class Burrow_Admin {
 			'platform'      => 'wordpress',
 			'pluginVersion' => BURROW_VERSION,
 			'site'          => array( 'url' => site_url(), 'cmsVersion' => get_bloginfo( 'version' ) ),
-			'capabilities'  => array( 'forms' => array_values( $this->detect_forms_capabilities() ), 'ecommerce' => class_exists( 'WooCommerce' ) ? array( 'woocommerce' ) : array(), 'ecommerce_funnel' => class_exists( 'WooCommerce' ), 'system' => true ),
+			'capabilities'  => array( 'forms' => array_values( $this->detect_forms_capabilities() ), 'ecommerce' => array_values( $this->detect_ecommerce_capabilities() ), 'ecommerce_funnel' => class_exists( 'WooCommerce' ), 'system' => true ),
 			'plugins'       => array_keys( $plugins ),
 		);
 	}
@@ -2986,7 +3101,7 @@ class Burrow_Admin {
 				continue;
 			}
 			$mode = isset( $form['mode'] ) ? sanitize_key( (string) $form['mode'] ) : 'off';
-			$allowed_modes = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ), true )
+			$allowed_modes = in_array( $provider, array( 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' ), true )
 				? array( 'off', 'count_only', 'custom_fields' )
 				: array( 'off', 'count_only' );
 			if ( ! in_array( $mode, $allowed_modes, true ) ) {
@@ -3200,15 +3315,25 @@ class Burrow_Admin {
 		if ( class_exists( '\FrmAppHelper' ) ) {
 			$out[] = 'formidable-forms';
 		}
+		if ( defined( 'SRFM_VER' ) || class_exists( '\SRFM\Inc\Form_Submit' ) ) {
+			$out[] = 'sure-forms';
+		}
+		return $out;
+	}
+
+	private function detect_ecommerce_capabilities() {
+		$out = array();
+		if ( class_exists( 'WooCommerce' ) ) {
+			$out[] = 'woocommerce';
+		}
+		if ( defined( 'SURECART_PLUGIN_FILE' ) || class_exists( 'SureCart' ) ) {
+			$out[] = 'surecart';
+		}
 		return $out;
 	}
 
 	private function detected_integrations() {
-		$list = $this->detect_forms_capabilities();
-		if ( class_exists( 'WooCommerce' ) ) {
-			$list[] = 'woocommerce';
-		}
-		return $list;
+		return array_merge( $this->detect_forms_capabilities(), $this->detect_ecommerce_capabilities() );
 	}
 
 	private function integration_labels() {
@@ -3219,7 +3344,9 @@ class Burrow_Admin {
 			'fluent-forms'     => 'Fluent Forms',
 			'wpforms'          => 'WPForms',
 			'formidable-forms' => 'Formidable Forms',
+			'sure-forms'       => 'SureForms',
 			'woocommerce'      => 'WooCommerce',
+			'surecart'         => 'SureCart',
 		);
 	}
 
@@ -3232,7 +3359,9 @@ class Burrow_Admin {
 			'fluent-forms'     => array( 'fluent_forms', 'fluent_forms_settings' ),
 			'wpforms'          => array( 'wpforms-overview', 'wpforms-entries' ),
 			'formidable-forms' => array( 'formidable', 'frm_form' ),
+			'sure-forms'       => array( 'sureforms_menu' ),
 			'woocommerce'      => array( 'woocommerce' ),
+			'surecart'         => array( 'sc-dashboard', 'sc-getting-started' ),
 		);
 
 		$menu_icon = $this->resolve_menu_icon_value( $menu_icons[ $integration ] ?? array() );
@@ -3256,7 +3385,9 @@ class Burrow_Admin {
 			'fluent-forms'     => 'dashicons-editor-table',
 			'wpforms'          => 'dashicons-list-view',
 			'formidable-forms' => 'dashicons-forms',
+			'sure-forms'       => 'dashicons-feedback',
 			'woocommerce'      => 'dashicons-cart',
+			'surecart'         => 'dashicons-cart',
 		);
 		return isset( $fallback[ $integration ] ) ? $fallback[ $integration ] : 'dashicons-admin-plugins';
 	}
@@ -3291,14 +3422,18 @@ class Burrow_Admin {
 			'fluent-forms'      => 'Fluent Forms',
 			'wpforms'           => 'WPForms',
 			'formidable-forms'  => 'Formidable Forms',
+			'sure-forms'        => 'SureForms',
 		);
-		foreach ( array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ) as $provider_key ) {
+		foreach ( array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' ) as $provider_key ) {
 			if ( in_array( $provider_key, $selected, true ) ) {
 				$steps[ $provider_key ] = $form_provider_labels[ $provider_key ];
 			}
 		}
 		if ( in_array( 'woocommerce', $selected, true ) ) {
 			$steps['woocommerce'] = 'WooCommerce';
+		}
+		if ( in_array( 'surecart', $selected, true ) ) {
+			$steps['surecart'] = 'SureCart';
 		}
 		$steps['review'] = 'Review';
 		$steps['backfill'] = 'Finish';
@@ -3495,7 +3630,7 @@ class Burrow_Admin {
 	}
 
 	private function operations_provider_supports_custom_fields( $provider_key ) {
-		return in_array( sanitize_key( (string) $provider_key ), array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms' ), true );
+		return in_array( sanitize_key( (string) $provider_key ), array( 'gravity-forms', 'contact-form-7', 'ninja-forms', 'fluent-forms', 'wpforms', 'formidable-forms', 'sure-forms' ), true );
 	}
 
 	private function list_provider_fields_for_form( $provider_key, $form_id ) {
@@ -3522,6 +3657,9 @@ class Burrow_Admin {
 		}
 		if ( 'formidable-forms' === $provider_key ) {
 			return $this->list_formidable_form_fields( $wp_form_id );
+		}
+		if ( 'sure-forms' === $provider_key ) {
+			return $this->list_sureforms_fields( $wp_form_id );
 		}
 		return isset( $contract['fieldMappings'] ) && is_array( $contract['fieldMappings'] ) ? $contract['fieldMappings'] : array();
 	}
@@ -4183,6 +4321,82 @@ class Burrow_Admin {
 			);
 		}
 		return $fields;
+	}
+
+	private function list_sureforms() {
+		$post_type = defined( 'SRFM_FORMS_POST_TYPE' ) ? SRFM_FORMS_POST_TYPE : 'sureforms_form';
+		if ( ! post_type_exists( $post_type ) ) {
+			return array();
+		}
+		$posts = get_posts(
+			array(
+				'post_type'      => $post_type,
+				'post_status'    => 'publish',
+				'posts_per_page' => 200,
+				'orderby'        => 'title',
+				'order'          => 'ASC',
+			)
+		);
+		if ( ! is_array( $posts ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $posts as $post ) {
+			if ( ! is_object( $post ) ) {
+				continue;
+			}
+			$out[] = array(
+				'id'    => (string) $post->ID,
+				'title' => '' !== (string) $post->post_title ? (string) $post->post_title : sprintf( 'Form %s', $post->ID ),
+			);
+		}
+		return $out;
+	}
+
+	/**
+	 * List SureForms fields for a form. Field ids are the block slugs, which are
+	 * the keys SureForms uses in the srfm_form_submit data payload.
+	 *
+	 * @param mixed $form_id Form post ID.
+	 * @return array<int,array{id:string,name:string,type:string}>
+	 */
+	private function list_sureforms_fields( $form_id ) {
+		$form_id = (int) $form_id;
+		if ( $form_id <= 0 || ! function_exists( 'parse_blocks' ) ) {
+			return array();
+		}
+		$content = (string) get_post_field( 'post_content', $form_id );
+		if ( '' === $content ) {
+			return array();
+		}
+		$fields = array();
+		$this->collect_sureforms_fields_from_blocks( parse_blocks( $content ), $fields );
+		return array_values( $fields );
+	}
+
+	private function collect_sureforms_fields_from_blocks( $blocks, array &$fields ) {
+		if ( ! is_array( $blocks ) ) {
+			return;
+		}
+		foreach ( $blocks as $block ) {
+			if ( ! is_array( $block ) ) {
+				continue;
+			}
+			$name  = isset( $block['blockName'] ) ? (string) $block['blockName'] : '';
+			$attrs = isset( $block['attrs'] ) && is_array( $block['attrs'] ) ? $block['attrs'] : array();
+			$slug  = isset( $attrs['slug'] ) ? (string) $attrs['slug'] : '';
+			if ( 0 === strpos( $name, 'srfm/' ) && '' !== $slug ) {
+				$label = isset( $attrs['label'] ) && '' !== (string) $attrs['label'] ? (string) $attrs['label'] : $slug;
+				$fields[ $slug ] = array(
+					'id'   => $slug,
+					'name' => $label,
+					'type' => substr( $name, strlen( 'srfm/' ) ),
+				);
+			}
+			if ( ! empty( $block['innerBlocks'] ) ) {
+				$this->collect_sureforms_fields_from_blocks( $block['innerBlocks'], $fields );
+			}
+		}
 	}
 
 	private function is_suggested_field_type( $type ) {

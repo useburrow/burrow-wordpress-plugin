@@ -102,6 +102,13 @@ class Burrow {
 		$this->loader->add_action( 'fluentform_submission_inserted', $this, 'handle_fluent_submission', 10, 3 );
 		$this->loader->add_action( 'wpforms_process_complete', $this, 'handle_wpforms_submission', 10, 4 );
 		$this->loader->add_action( 'frm_after_create_entry', $this, 'handle_formidable_submission', 10, 2 );
+		$this->loader->add_action( 'srfm_form_submit', $this, 'handle_sureforms_submission', 10, 1 );
+
+		// SureCart hooks. checkout_confirmed fires synchronously at purchase;
+		// order_updated/refund_created arrive via SureCart's platform webhooks.
+		$this->loader->add_action( 'surecart/checkout_confirmed', $this, 'handle_surecart_checkout_confirmed', 10, 2 );
+		$this->loader->add_action( 'surecart/order_updated', $this, 'handle_surecart_order_updated', 10, 2 );
+		$this->loader->add_action( 'surecart/refund_created', $this, 'handle_surecart_refund_created', 10, 2 );
 
 		// WooCommerce hooks.
 		$this->loader->add_action( 'woocommerce_payment_complete', $this, 'handle_woocommerce_order', 10, 1 );
@@ -550,6 +557,18 @@ class Burrow {
 	}
 
 	/**
+	 * Handle SureForms submission.
+	 *
+	 * @param mixed $form_submit_response Response array from srfm_form_submit.
+	 * @return void
+	 */
+	public function handle_sureforms_submission( $form_submit_response ) {
+		$provider = new BurrowWP\Providers\Forms\SureFormsProvider();
+		$payload  = is_array( $form_submit_response ) ? $form_submit_response : array();
+		$this->enqueue_forms_event( $provider->normalize_submission( $payload ) );
+	}
+
+	/**
 	 * Handle WooCommerce order events.
 	 *
 	 * @param int $order_id Order ID.
@@ -810,6 +829,281 @@ class Burrow {
 	 */
 	private function is_revenue_countable_order_status( $status ) {
 		return in_array( sanitize_key( (string) $status ), array( 'processing', 'completed' ), true );
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function is_surecart_tracking_enabled( array $settings ) {
+		$selected = isset( $settings['onboarding']['selected_integrations'] ) && is_array( $settings['onboarding']['selected_integrations'] )
+			? $settings['onboarding']['selected_integrations']
+			: array();
+		$mode = isset( $settings['onboarding']['surecart_mode'] ) ? (string) $settings['onboarding']['surecart_mode'] : 'track';
+		return in_array( 'surecart', $selected, true ) && 'track' === $mode;
+	}
+
+	/**
+	 * Handle SureCart checkout confirmation (fires synchronously after payment).
+	 *
+	 * Never throws: this runs inside SureCart's checkout confirm request and
+	 * must not be able to break a customer's purchase.
+	 *
+	 * @param object $checkout \SureCart\Models\Checkout with purchases/customer expanded.
+	 * @param mixed  $request  WP_REST_Request (unused).
+	 * @return void
+	 */
+	public function handle_surecart_checkout_confirmed( $checkout, $request = null ) {
+		try {
+			$this->emit_surecart_order_placed( $checkout );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] checkout_confirmed handling failed: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Build and dispatch ecommerce.order.placed + item.purchased for a confirmed SureCart checkout.
+	 *
+	 * @param object $checkout Checkout model.
+	 * @return void
+	 */
+	private function emit_surecart_order_placed( $checkout ) {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_surecart_tracking_enabled( $settings ) ) {
+			return;
+		}
+
+		$provider = new BurrowWP\Providers\Ecommerce\SureCartProvider();
+		$data     = $provider->normalize_order( $checkout );
+		if ( empty( $data ) ) {
+			return;
+		}
+		if ( in_array( (string) $data['status'], array( 'payment_failed', 'canceled', 'void' ), true ) ) {
+			return;
+		}
+
+		$data         = $this->apply_surecart_order_sequence( $data );
+		$submitted_at = BurrowWP\Providers\Ecommerce\SureCartProvider::resolve_created_at( $checkout ) ?? gmdate( 'c' );
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] Skipped: ' . $e->getMessage() );
+			return;
+		}
+
+		$input = $this->build_order_placed_input( $data, $submitted_at, $settings, 'surecart', 'sc_order_' );
+		try {
+			$order_envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceOrderPlacedEvent(
+				$input,
+				$routing_resolver
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] ecommerce.order.placed build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$envelopes      = array( $order_envelope );
+		$customer_token = (string) $data['customerToken'];
+		foreach ( (array) $data['items'] as $item ) {
+			$item_input = $this->build_item_purchased_input( $item, $data, $submitted_at, $customer_token, $settings, 'surecart' );
+			try {
+				$envelopes[] = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::buildEcommerceItemPurchasedEvent(
+					$item_input,
+					$routing_resolver
+				);
+			} catch ( \Throwable $e ) {
+				error_log( '[Burrow surecart] ecommerce.item.purchased build failed: ' . $e->getMessage() );
+				continue;
+			}
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( $envelopes, array(
+			'provider'  => 'surecart',
+			'projectId' => $sdk->projectId ?? '',
+		) );
+	}
+
+	/**
+	 * Override orderSequence/isNewCustomer for identified SureCart customers using
+	 * a locally observed per-customer order count (SureCart exposes no order count).
+	 *
+	 * @param array<string,mixed> $data Normalized order data.
+	 * @return array<string,mixed>
+	 */
+	private function apply_surecart_order_sequence( array $data ) {
+		$token = (string) ( $data['customerToken'] ?? '' );
+		if ( 'true' === (string) ( $data['isGuest'] ?? 'true' ) || 0 !== strpos( $token, 'sc_cust_' ) ) {
+			return $data;
+		}
+
+		$counts = get_option( 'burrow_surecart_order_counts', array() );
+		if ( ! is_array( $counts ) ) {
+			$counts = array();
+		}
+		$entry = isset( $counts[ $token ] ) && is_array( $counts[ $token ] ) ? $counts[ $token ] : array( 'count' => 0, 'last' => '' );
+		$order_id = (string) ( $data['orderId'] ?? '' );
+
+		if ( $order_id !== (string) $entry['last'] ) {
+			$entry['count'] = (int) $entry['count'] + 1;
+			$entry['last']  = $order_id;
+			$counts[ $token ] = $entry;
+			update_option( 'burrow_surecart_order_counts', $counts, false );
+		}
+
+		$sequence = max( 1, (int) $entry['count'] );
+		$data['orderSequence'] = (string) $sequence;
+		$data['isNewCustomer'] = 1 === $sequence ? 'true' : 'false';
+		return $data;
+	}
+
+	/**
+	 * Handle SureCart order webhook updates for lifecycle events (cancellations).
+	 *
+	 * @param object $order \SureCart\Models\Order.
+	 * @param mixed  $event Raw webhook event data.
+	 * @return void
+	 */
+	public function handle_surecart_order_updated( $order, $event = null ) {
+		try {
+			if ( ! is_object( $order ) ) {
+				return;
+			}
+			$status = (string) ( $order->status ?? '' );
+			if ( ! in_array( $status, array( 'canceled', 'void' ), true ) ) {
+				return;
+			}
+
+			$checkout_id = $this->resolve_surecart_checkout_id( $order->checkout ?? null );
+			if ( '' === $checkout_id ) {
+				return;
+			}
+
+			$currency = strtoupper( (string) ( $order->currency ?? '' ) );
+			$total    = is_numeric( $order->total_amount ?? null ) ? (float) $order->total_amount : 0.0;
+
+			$this->dispatch_surecart_lifecycle_event(
+				'buildEcommerceOrderCancelledEvent',
+				$checkout_id,
+				$total,
+				$currency,
+				BurrowWP\Providers\Ecommerce\SureCartProvider::resolve_created_at( $order )
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] order_updated handling failed: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Handle SureCart refund webhook.
+	 *
+	 * @param object $refund \SureCart\Models\Refund.
+	 * @param mixed  $event  Raw webhook event data.
+	 * @return void
+	 */
+	public function handle_surecart_refund_created( $refund, $event = null ) {
+		try {
+			if ( ! is_object( $refund ) ) {
+				return;
+			}
+
+			$checkout_id = $this->resolve_surecart_checkout_id( $refund->checkout ?? null );
+			if ( '' === $checkout_id && ! empty( $refund->charge ) && is_string( $refund->charge ) && class_exists( '\SureCart\Models\Charge' ) ) {
+				$charge = \SureCart\Models\Charge::find( $refund->charge );
+				if ( is_object( $charge ) && ! is_wp_error( $charge ) ) {
+					$checkout_id = $this->resolve_surecart_checkout_id( $charge->checkout ?? null );
+				}
+			}
+			if ( '' === $checkout_id ) {
+				return;
+			}
+
+			$currency = strtoupper( (string) ( $refund->currency ?? '' ) );
+			$amount   = is_numeric( $refund->amount ?? null ) ? (float) $refund->amount : 0.0;
+
+			$this->dispatch_surecart_lifecycle_event(
+				'buildEcommerceOrderRefundedEvent',
+				$checkout_id,
+				$amount,
+				$currency,
+				BurrowWP\Providers\Ecommerce\SureCartProvider::resolve_created_at( $refund )
+			);
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] refund_created handling failed: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Extract a SureCart checkout id from an id string or expanded object.
+	 *
+	 * @param mixed $checkout Checkout id or object.
+	 * @return string
+	 */
+	private function resolve_surecart_checkout_id( $checkout ) {
+		if ( is_string( $checkout ) ) {
+			return trim( $checkout );
+		}
+		if ( is_object( $checkout ) && isset( $checkout->id ) ) {
+			return trim( (string) $checkout->id );
+		}
+		return '';
+	}
+
+	/**
+	 * Dispatch a SureCart order lifecycle envelope (cancelled/refunded).
+	 *
+	 * @param string      $builder_method  CanonicalEnvelopeBuilders method.
+	 * @param string      $checkout_id     SureCart checkout id (shared order identity).
+	 * @param float       $minor_amount    Amount in the currency's minor unit.
+	 * @param string      $currency        ISO currency code.
+	 * @param string|null $timestamp       Stable ISO timestamp for dedupe, null falls back to now.
+	 * @return void
+	 */
+	private function dispatch_surecart_lifecycle_event( $builder_method, $checkout_id, $minor_amount, $currency, $timestamp ) {
+		$settings = $this->options_repo->get_settings();
+		if ( ! $this->is_surecart_tracking_enabled( $settings ) ) {
+			return;
+		}
+
+		try {
+			$routing_resolver = $this->build_channel_routing_resolver( $settings );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] Skipped lifecycle: ' . $e->getMessage() );
+			return;
+		}
+
+		$total = BurrowWP\Providers\Ecommerce\SureCartProvider::convert_amount( $minor_amount, $currency );
+
+		$input = array(
+			'organizationId'   => (string) ( $settings['routing']['organizationId'] ?? '' ),
+			'orderId'          => $checkout_id,
+			'orderTotal'       => $total,
+			'total'            => $total,
+			'currency'         => $currency,
+			'timestamp'        => $timestamp ?? gmdate( 'c' ),
+			'externalEntityId' => 'sc_order_' . $checkout_id,
+			'tags'             => array(
+				'provider' => 'surecart',
+				'currency' => $currency,
+			),
+		);
+
+		try {
+			$envelope = \Burrow\Sdk\Events\CanonicalEnvelopeBuilders::$builder_method( $input, $routing_resolver );
+		} catch ( \Throwable $e ) {
+			error_log( '[Burrow surecart] ' . $builder_method . ' build failed: ' . $e->getMessage() );
+			return;
+		}
+
+		$sdk = \Burrow\Sdk\Client\BurrowClientState::fromArray(
+			isset( $settings['sdk_state'] ) && is_array( $settings['sdk_state'] ) ? $settings['sdk_state'] : array()
+		);
+		$this->sdk_dispatch_events( array( $envelope ), array(
+			'provider'  => 'surecart',
+			'projectId' => $sdk->projectId ?? '',
+		) );
 	}
 
 	/**
@@ -1531,9 +1825,9 @@ class Burrow {
 	 * @param array<string,mixed> $settings     Plugin settings.
 	 * @return array<string,mixed>
 	 */
-	private function build_order_placed_input( array $data, $submitted_at, array $settings ) {
+	private function build_order_placed_input( array $data, $submitted_at, array $settings, $provider = 'woocommerce', $entity_prefix = 'wc_order_' ) {
 		$tags = array(
-			'provider'        => 'woocommerce',
+			'provider'        => $provider,
 			'currency'        => (string) $data['currency'],
 			'customerToken'   => (string) $data['customerToken'],
 			'isGuest'         => (string) $data['isGuest'],
@@ -1564,7 +1858,7 @@ class Burrow {
 			'itemCount'        => (int) $data['itemCount'],
 			'submittedAt'      => $submitted_at,
 			'timestamp'        => $submitted_at,
-			'externalEntityId' => 'wc_order_' . $data['orderId'],
+			'externalEntityId' => $entity_prefix . $data['orderId'],
 			'customerToken'    => (string) $data['customerToken'],
 			'tags'             => $tags,
 		);
@@ -1585,7 +1879,7 @@ class Burrow {
 	 * @param array<string,mixed> $settings        Plugin settings.
 	 * @return array<string,mixed>
 	 */
-	private function build_item_purchased_input( array $item, array $data, $submitted_at, $customer_token, array $settings ) {
+	private function build_item_purchased_input( array $item, array $data, $submitted_at, $customer_token, array $settings, $provider = 'woocommerce' ) {
 		return array(
 			'organizationId' => (string) ( $settings['routing']['organizationId'] ?? '' ),
 			'orderId'        => (string) $data['orderId'],
@@ -1599,7 +1893,7 @@ class Burrow {
 			'timestamp'      => $submitted_at,
 			'customerToken'  => $customer_token,
 			'tags'           => array(
-				'provider'    => 'woocommerce',
+				'provider'    => $provider,
 				'currency'    => (string) $data['currency'],
 				'orderId'     => (string) $data['orderId'],
 				'productId'   => (string) $item['productId'],
@@ -2747,6 +3041,7 @@ class Burrow {
 		'ninja-forms'      => 'nf_',
 		'wpforms'          => 'wpf_',
 		'formidable-forms' => 'frm_',
+		'sure-forms'       => 'srfm_',
 	);
 
 	/**

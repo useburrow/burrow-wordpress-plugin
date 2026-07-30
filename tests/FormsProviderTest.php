@@ -2,6 +2,7 @@
 
 use BurrowWP\Providers\Forms\FluentFormsProvider;
 use BurrowWP\Providers\Forms\NinjaFormsProvider;
+use BurrowWP\Providers\Forms\SureFormsProvider;
 use PHPUnit\Framework\TestCase;
 
 class FormsProviderTest extends TestCase {
@@ -49,5 +50,44 @@ class FormsProviderTest extends TestCase {
 		$this->assertSame( 'Newsletter', $result['formName'] );
 		$this->assertSame( '55', $result['submissionId'] );
 		$this->assertSame( 'user@example.com', $result['rawValues']['email'] );
+	}
+
+	public function test_sureforms_provider_reads_submit_response_payload() {
+		$provider = new SureFormsProvider();
+		$result   = $provider->normalize_submission(
+			array(
+				'success'   => true,
+				'form_id'   => 12,
+				'entry_id'  => 340,
+				'to_emails' => array( 'admin@example.com' ),
+				'form_name' => 'Contact',
+				'message'   => '<p>Thanks!</p>',
+				'data'      => array(
+					'name'          => 'Jane',
+					'email-address' => 'jane@example.com',
+				),
+			)
+		);
+
+		$this->assertSame( 'sure-forms', $result['provider'] );
+		$this->assertSame( '12', $result['formId'] );
+		$this->assertSame( 'Contact', $result['formName'] );
+		$this->assertSame( '340', $result['submissionId'] );
+		$this->assertSame( 'jane@example.com', $result['rawValues']['email-address'] );
+	}
+
+	public function test_sureforms_provider_generates_submission_id_when_gdpr_omits_entry_id() {
+		$provider = new SureFormsProvider();
+		$result   = $provider->normalize_submission(
+			array(
+				'success'   => true,
+				'form_id'   => 12,
+				'form_name' => 'Contact',
+				'data'      => array( 'name' => 'Jane' ),
+			)
+		);
+
+		$this->assertNotSame( '', $result['submissionId'] );
+		$this->assertStringStartsWith( 'srfm_', $result['submissionId'] );
 	}
 }

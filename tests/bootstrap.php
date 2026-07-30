@@ -33,3 +33,6 @@ require_once dirname( __DIR__ ) . '/src/Infrastructure/Http/PortlessAwareTranspo
 require_once dirname( __DIR__ ) . '/src/Providers/Forms/FormsProviderInterface.php';
 require_once dirname( __DIR__ ) . '/src/Providers/Forms/NinjaFormsProvider.php';
 require_once dirname( __DIR__ ) . '/src/Providers/Forms/FluentFormsProvider.php';
+require_once dirname( __DIR__ ) . '/src/Providers/Forms/SureFormsProvider.php';
+require_once dirname( __DIR__ ) . '/src/Providers/Ecommerce/EcommerceProviderInterface.php';
+require_once dirname( __DIR__ ) . '/src/Providers/Ecommerce/SureCartProvider.php';
